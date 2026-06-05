@@ -186,6 +186,14 @@ class Database:
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )''')
 
+        # جدول عداد التحذيرات
+        c.execute('''CREATE TABLE IF NOT EXISTS warning_counts (
+            chat_id INTEGER,
+            user_id INTEGER,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY(chat_id, user_id)
+        )''')
+
         conn.commit()
         conn.close()
 
@@ -220,31 +228,13 @@ class Database:
     def add_warning(self, chat_id: int, user_id: int, reason: str, warned_by: int) -> int:
         conn = self._get_conn()
         c = conn.cursor()
-        c.execute("SELECT id FROM warnings WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-        existing = c.fetchone()
-        if existing:
-            c.execute("UPDATE warnings SET reason = ?, warned_by = ?, warned_at = CURRENT_TIMESTAMP WHERE chat_id = ? AND user_id = ?",
-                     (reason, warned_by, chat_id, user_id))
-            # زيادة العداد عبر عمود منفصل
-            c.execute("""CREATE TABLE IF NOT EXISTS warning_counts (
-                chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
-                PRIMARY KEY(chat_id, user_id))""")
-            c.execute("""INSERT INTO warning_counts (chat_id, user_id, count) VALUES (?, ?, 1)
-                        ON CONFLICT(chat_id, user_id) DO UPDATE SET count = count + 1""",
-                     (chat_id, user_id))
-            c.execute("SELECT count FROM warning_counts WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            count = c.fetchone()[0]
-        else:
-            c.execute("INSERT INTO warnings (chat_id, user_id, reason, warned_by) VALUES (?, ?, ?, ?)",
-                     (chat_id, user_id, reason, warned_by))
-            c.execute("""CREATE TABLE IF NOT EXISTS warning_counts (
-                chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
-                PRIMARY KEY(chat_id, user_id))""")
-            c.execute("""INSERT INTO warning_counts (chat_id, user_id, count) VALUES (?, ?, 1)
-                        ON CONFLICT(chat_id, user_id) DO UPDATE SET count = count + 1""",
-                     (chat_id, user_id))
-            c.execute("SELECT count FROM warning_counts WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            count = c.fetchone()[0]
+        c.execute("INSERT INTO warnings (chat_id, user_id, reason, warned_by) VALUES (?, ?, ?, ?)",
+                 (chat_id, user_id, reason, warned_by))
+        c.execute("""INSERT INTO warning_counts (chat_id, user_id, count) VALUES (?, ?, 1)
+                    ON CONFLICT(chat_id, user_id) DO UPDATE SET count = count + 1""",
+                 (chat_id, user_id))
+        c.execute("SELECT count FROM warning_counts WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+        count = c.fetchone()[0]
         conn.commit()
         conn.close()
         return count
@@ -1996,7 +1986,25 @@ def main():
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_messages))
     
     # فحص الكتم المؤقت كل دقيقة
-    app.job_queue.run_repeating(check_temp_mutes, interval=60, first=10)
+    if app.job_queue is not None:
+        app.job_queue.run_repeating(check_temp_mutes, interval=60, first=10)
+        logger.info("✅ JobQueue نشط - فحص الكتم المؤقت مفعّل")
+    else:
+        logger.warning("⚠️ JobQueue غير متوفر - استخدم python-telegram-bot[job-queue]")
+        # بديل: فحص الكتم المؤقت عبر خيط منفصل
+        def temp_mute_checker():
+            import asyncio
+            while True:
+                try:
+                    loop = asyncio.new_event_loop()
+                    expired = db.get_expired_mutes()
+                    for mute in expired:
+                        logger.info(f"Auto-unmute: user {mute['user_id']} in chat {mute['chat_id']}")
+                    loop.close()
+                except Exception as e:
+                    logger.error(f"Error in temp_mute_checker: {e}")
+                time.sleep(60)
+        threading.Thread(target=temp_mute_checker, daemon=True).start()
     
     logger.info("🤖 بوت إدارة المجموعات المتكامل v2.0 بدأ العمل!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

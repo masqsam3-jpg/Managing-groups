@@ -585,96 +585,43 @@ def bot_admin_required(func):
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """أمر البدء"""
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 الأوامر", callback_data="help"),
-         InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
-        [InlineKeyboardButton("👤 المطور", url="https://t.me/masqsam3")]
+        [InlineKeyboardButton("🛡️ الإشراف", callback_data="help_admin"),
+         InlineKeyboardButton("📌 المحتوى", callback_data="help_content")],
+        [InlineKeyboardButton("📝 الملاحظات", callback_data="help_notes"),
+         InlineKeyboardButton("🔍 الفلاتر", callback_data="help_filters")],
+        [InlineKeyboardButton("🔒 الأقفال", callback_data="help_locks"),
+         InlineKeyboardButton("🔤 الكلمات", callback_data="help_badwords")],
+        [InlineKeyboardButton("⚙️ الإعدادات", callback_data="help_settings"),
+         InlineKeyboardButton("📊 المعلومات", callback_data="help_info")],
+        [InlineKeyboardButton("🚨 أخرى", callback_data="help_other"),
+         InlineKeyboardButton("👤 المطور", url="https://t.me/masqsam3")]
     ])
-    text = """🤖 **مرحباً! أنا بوت إدارة المجموعات المتكامل v2.0**
+    text = """🤖 **بوت إدارة المجموعات المتكامل v2.0**
 
-🛡️ أحمي مجموعتك وأديرها باحترافية
+🛡️ أحمي مجموعتك وأديرها باحترافية!
 
-✨ **الميزات الرئيسية:**
-• 🚫 الحظر والكتم (مؤقت ودائم)
-• ⚠️ نظام التحذيرات المتقدم
-• 🛡️ حماية ضد السبام والفلود
-• 📋 نظام القوانين والملاحظات
-• 🔍 فلاتر الرد التلقائي
-• 🔒 قفل أنواع الرسائل
-• 📊 إحصائيات مفصلة
-• 📢 نظام الإعلانات
-• 🔤 فلتر الكلمات المسيئة
-• 🚨 نظام البلاغات
-
-اضغط على الأزرار أدناه للبدء 👇"""
+👇 اختر أي ميزة لمعرفة أوامرها:"""
     
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض الأوامر المتاحة"""
+    """عرض الأوامر المتاحة - قائمة أزرار منفصلة"""
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡️ الإشراف", callback_data="help_admin"),
+         InlineKeyboardButton("📌 المحتوى", callback_data="help_content")],
+        [InlineKeyboardButton("📝 الملاحظات", callback_data="help_notes"),
+         InlineKeyboardButton("🔍 الفلاتر", callback_data="help_filters")],
+        [InlineKeyboardButton("🔒 الأقفال", callback_data="help_locks"),
+         InlineKeyboardButton("🔤 الكلمات", callback_data="help_badwords")],
+        [InlineKeyboardButton("⚙️ الإعدادات", callback_data="help_settings"),
+         InlineKeyboardButton("📊 المعلومات", callback_data="help_info")],
+        [InlineKeyboardButton("🚨 أخرى", callback_data="help_other")]
+    ])
     text = """📖 **دليل الأوامر الكامل**
 
-🛡️ **أوامر الإشراف:**
-• `/ban` [سبب] - حظر مستخدم (بالرد)
-• `/unban` - إلغاء الحظر (بالرد)
-• `/mute` [وقت] - كتم مستخدم (بالرد)
-• `/unmute` - إلغاء الكتم (بالرد)
-• `/tmute` [وقت] - كتم مؤقت (مثل: /tmute 5m)
-• `/kick` - طرد مستخدم (بالرد)
-• `/warn` [سبب] - تحذير مستخدم
-• `/unwarn` - إزالة التحذيرات
-• `/del` / `/purge` [عدد] - حذف رسائل
+👇 اختر أي قسم لمعرفة أوامره:"""
 
-📌 **إدارة المحتوى:**
-• `/pin` - تثبيت رسالة (بالرد)
-• `/unpin` - إلغاء التثبيت
-• `/setrules` [نص] - تعيين القوانين
-• `/rules` - عرض القوانين
-• `/clearrules` - حذف القوانين
-
-📝 **الملاحظات:**
-• `/save` [اسم] [محتوى] - حفظ ملاحظة
-• `/get` [اسم] - استرجاع ملاحظة
-• `/notes` - عرض كل الملاحظات
-• `/delnote` [اسم] - حذف ملاحظة
-
-🔍 **الفلاتر (رد تلقائي):**
-• `/filter` [كلمة] [رد] - إضافة فلتر
-• `/stop` [كلمة] - حذف فلتر
-• `/filters` - عرض الفلاتر
-
-🔒 **الأقفال:**
-• `/lock` [نوع] - قفل نوع رسالة
-• `/unlock` [نوع] - فتح نوع رسالة
-• `/locks` - عرض الأقفال
-• `/lockall` - قفل الكل
-• `/unlockall` - فتح الكل
-
-🔤 **فلتر الكلمات:**
-• `/addbadword` [كلمة] - إضافة كلمة مسيئة
-• `/delbadword` [كلمة] - حذف كلمة مسيئة
-• `/badwords` - عرض الكلمات المحظورة
-
-⚙️ **الإعدادات:**
-• `/setwelcome` [نص] - تعيين ترحيب مخصص
-• `/resetwelcome` - إعادة الترحيب الافتراضي
-• `/antispam` [تشغيل/إيقاف] - حماية السبام
-• `/antiflood` [تشغيل/إيقاف] - حماية الفلود
-• `/antilink` [تشغيل/إيقاف] - منع الروابط
-• `/maintenance` - وضع الصيانة
-• `/setlog` [معرف] - تعيين قناة السجلات
-
-📊 **المعلومات:**
-• `/info` - معلومات المستخدم
-• `/stats` - إحصائيات المجموعة
-• `/admins` - قائمة المشرفين
-• `/log` - سجل الإجراءات
-
-🚨 **أخرى:**
-• `@admin` - إبلاغ المشرفين
-• `/announce` [نص] - إعلان للجميع
-• `/report` - بلاغ عن مستخدم"""
-
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=keyboard)
 
 # ═══════════════════════════════════════════════════════════════
 # أوامر الإشراف
@@ -1545,6 +1492,28 @@ async def log_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # رسائل الأزرار التفاعلية
 # ═══════════════════════════════════════════════════════════════
 
+# لوحة الأزرار الرئيسية المشتركة
+def main_keyboard():
+    """إنشاء لوحة الأزرار الرئيسية"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛡️ الإشراف", callback_data="help_admin"),
+         InlineKeyboardButton("📌 المحتوى", callback_data="help_content")],
+        [InlineKeyboardButton("📝 الملاحظات", callback_data="help_notes"),
+         InlineKeyboardButton("🔍 الفلاتر", callback_data="help_filters")],
+        [InlineKeyboardButton("🔒 الأقفال", callback_data="help_locks"),
+         InlineKeyboardButton("🔤 الكلمات", callback_data="help_badwords")],
+        [InlineKeyboardButton("⚙️ الإعدادات", callback_data="help_settings"),
+         InlineKeyboardButton("📊 المعلومات", callback_data="help_info")],
+        [InlineKeyboardButton("🚨 أخرى", callback_data="help_other"),
+         InlineKeyboardButton("👤 المطور", url="https://t.me/masqsam3")]
+    ])
+
+def back_keyboard():
+    """زر الرجوع للقائمة الرئيسية"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
+    ])
+
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة أزرار الكالباك"""
     query = update.callback_query
@@ -1552,104 +1521,17 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = query.data
     
-    if data == "help":
+    # ═══ القائمة الرئيسية ═══
+    if data == "back" or data == "help":
         await query.message.edit_text(
-            "📖 استخدم /help لرؤية جميع الأوامر المتاحة!\n\n"
-            "أو اختر من الأزرار أدناه:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛡️ الإشراف", callback_data="help_admin"),
-                 InlineKeyboardButton("📝 الملاحظات", callback_data="help_notes")],
-                [InlineKeyboardButton("🔒 الأقفال", callback_data="help_locks"),
-                 InlineKeyboardButton("⚙️ الإعدادات", callback_data="help_settings")],
-                [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
-            ])
-        )
-    
-    elif data == "help_admin":
-        await query.message.edit_text(
-            "🛡️ **أوامر الإشراف:**\n\n"
-            "• /ban [سبب] - حظر\n"
-            "• /unban - إلغاء حظر\n"
-            "• /mute - كتم\n"
-            "• /unmute - إلغاء كتم\n"
-            "• /tmute [وقت] - كتم مؤقت\n"
-            "• /kick - طرد\n"
-            "• /warn [سبب] - تحذير\n"
-            "• /unwarn - إزالة تحذيرات\n"
-            "• /del - حذف رسالة\n"
-            "• /purge [عدد] - حذف عدة رسائل\n"
-            "• /pin - تثبيت\n"
-            "• /unpin - إلغاء تثبيت",
+            "🤖 **بوت إدارة المجموعات المتكامل v2.0**\n\n"
+            "🛡️ أحمي مجموعتك وأديرها باحترافية!\n\n"
+            "👇 اختر أي ميزة لمعرفة أوامرها:",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع", callback_data="help")]
-            ])
+            reply_markup=main_keyboard()
         )
     
-    elif data == "help_notes":
-        await query.message.edit_text(
-            "📝 **أوامر الملاحظات:**\n\n"
-            "• /save [اسم] [محتوى] - حفظ\n"
-            "• /get [اسم] - استرجاع\n"
-            "• /notes - عرض الكل\n"
-            "• /delnote [اسم] - حذف\n\n"
-            "🔍 **أوامر الفلاتر:**\n\n"
-            "• /filter [كلمة] [رد] - إضافة\n"
-            "• /stop [كلمة] - حذف\n"
-            "• /filters - عرض الكل",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع", callback_data="help")]
-            ])
-        )
-    
-    elif data == "help_locks":
-        types_text = "\n".join([f"• {v} (`{k}`)" for k, v in LOCK_TYPES.items()])
-        await query.message.edit_text(
-            f"🔒 **أوامر الأقفال:**\n\n"
-            f"• /lock [نوع] - قفل\n"
-            f"• /unlock [نوع] - فتح\n"
-            f"• /locks - عرض الأقفال\n"
-            f"• /lockall - قفل الكل\n"
-            f"• /unlockall - فتح الكل\n\n"
-            f"**الأنواع المتاحة:**\n{types_text}",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع", callback_data="help")]
-            ])
-        )
-    
-    elif data == "help_settings":
-        await query.message.edit_text(
-            "⚙️ **أوامر الإعدادات:**\n\n"
-            "• /setwelcome [نص] - تعيين ترحيب\n"
-            "• /resetwelcome - إعادة الترحيب\n"
-            "• /antispam [تشغيل/إيقاف]\n"
-            "• /antiflood [تشغيل/إيقاف]\n"
-            "• /antilink [تشغيل/إيقاف]\n"
-            "• /maintenance - وضع الصيانة\n"
-            "• /setlog [معرف] - قناة السجلات\n"
-            "• /addbadword [كلمة] - كلمة محظورة\n"
-            "• /delbadword [كلمة] - حذف كلمة\n"
-            "• /badwords - عرض الكلمات",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع", callback_data="help")]
-            ])
-        )
-    
-    elif data == "back":
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📖 الأوامر", callback_data="help"),
-             InlineKeyboardButton("⚙️ الإعدادات", callback_data="settings")],
-            [InlineKeyboardButton("👤 المطور", url="https://t.me/masqsam3")]
-        ])
-        await query.message.edit_text(
-            "🤖 **بوت إدارة المجموعات المتكامل v2.0**\n\nاختر من الأزرار أدناه 👇",
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
-    
+    # ═══ الإعدادات السريعة ═══
     elif data == "settings":
         settings = db.get_settings(update.effective_chat.id)
         text = f"""⚙️ **إعدادات المجموعة**
@@ -1664,8 +1546,143 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.edit_text(
             text, parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 رجوع", callback_data="back")]
+                [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
             ])
+        )
+    
+    # ═══ 🛡️ الإشراف ═══
+    elif data == "help_admin":
+        await query.message.edit_text(
+            "🛡️ **أوامر الإشراف**\n\n"
+            "🚫 `/ban` [سبب] - حظر مستخدم (بالرد على رسالته)\n"
+            "✅ `/unban` - إلغاء الحظر (بالرد)\n"
+            "🔇 `/mute` - كتم مستخدم (بالرد)\n"
+            "🔊 `/unmute` - إلغاء الكتم (بالرد)\n"
+            "⏱️ `/tmute` [وقت] - كتم مؤقت\n"
+            "  مثال: `/tmute 5m` أو `/tmute 2h`\n"
+            "  الوحدات: s=ثانية m=دقيقة h=ساعة d=يوم\n"
+            "👢 `/kick` [سبب] - طرد مستخدم (بالرد)\n"
+            "⚠️ `/warn` [سبب] - تحذير (3 تحذيرات = حظر)\n"
+            "✅ `/unwarn` - إزالة التحذيرات (بالرد)\n"
+            "🗑️ `/del` - حذف رسالة واحدة (بالرد)\n"
+            "🗑️ `/purge` [عدد] - حذف عدة رسائل",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 📌 المحتوى ═══
+    elif data == "help_content":
+        await query.message.edit_text(
+            "📌 **أوامر إدارة المحتوى**\n\n"
+            "📌 `/pin` - تثبيت رسالة (بالرد عليها)\n"
+            "📌 `/unpin` - إلغاء تثبيت جميع الرسائل\n"
+            "📋 `/setrules` [نص] - تعيين قوانين المجموعة\n"
+            "📋 `/rules` - عرض القوانين\n"
+            "📋 `/clearrules` - حذف القوانين",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 📝 الملاحظات ═══
+    elif data == "help_notes":
+        await query.message.edit_text(
+            "📝 **أوامر الملاحظات**\n\n"
+            "💾 `/save` اسم المحتوى - حفظ ملاحظة جديدة\n"
+            "📖 `/get` اسم - استرجاع ملاحظة\n"
+            "📋 `/notes` - عرض كل الملاحظات المحفوظة\n"
+            "🗑️ `/delnote` اسم - حذف ملاحظة\n\n"
+            "💡 **مثال:**\n"
+            "`/save discord رابط الديسكورد: https://discord.gg/xxx`\n"
+            "ثم: `/get discord`",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 🔍 الفلاتر ═══
+    elif data == "help_filters":
+        await query.message.edit_text(
+            "🔍 **أوامر الفلاتر (رد تلقائي)**\n\n"
+            "➕ `/filter` كلمة الرد - إضافة فلتر تلقائي\n"
+            "➖ `/stop` كلمة - حذف فلتر\n"
+            "📋 `/filters` - عرض كل الفلاتر النشطة\n\n"
+            "💡 **مثال:**\n"
+            "`/filter مرحبا أهلاً وسهلاً!`\n"
+            "عندما يكتب أحد 'مرحبا' سيرد البوت تلقائياً",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 🔒 الأقفال ═══
+    elif data == "help_locks":
+        types_text = " | ".join([f"`{k}`" for k in LOCK_TYPES.keys()])
+        types_desc = "\n".join([f" {v} ← `{k}`" for k, v in LOCK_TYPES.items()])
+        await query.message.edit_text(
+            f"🔒 **أوامر الأقفال**\n\n"
+            f"🔒 `/lock` نوع - قفل نوع رسالة\n"
+            f"🔓 `/unlock` نوع - فتح نوع رسالة\n"
+            f"📋 `/locks` - عرض الأقفال النشطة\n"
+            f"🔒 `/lockall` - قفل كل الأنواع\n"
+            f"🔓 `/unlockall` - فتح كل الأنواع\n\n"
+            f"**الأنواع المتاحة:**\n{types_desc}\n\n"
+            f"💡 **مثال:** `/lock stickers`",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 🔤 الكلمات ═══
+    elif data == "help_badwords":
+        await query.message.edit_text(
+            "🔤 **فلتر الكلمات المسيئة**\n\n"
+            "➕ `/addbadword` كلمة - إضافة كلمة محظورة\n"
+            "➖ `/delbadword` كلمة - حذف كلمة من القائمة\n"
+            "📋 `/badwords` - عرض الكلمات المحظورة\n\n"
+            "⚡ عند كتابة كلمة محظورة يتم حذف الرسالة تلقائياً\n\n"
+            "💡 **مثال:** `/addbadword سب`",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ ⚙️ الإعدادات ═══
+    elif data == "help_settings":
+        await query.message.edit_text(
+            "⚙️ **أوامر الإعدادات**\n\n"
+            "💬 `/setwelcome` [نص] - تعيين رسالة ترحيب مخصصة\n"
+            "  المتغيرات: `{user}` `{chat}` `{count}`\n"
+            "🔄 `/resetwelcome` - إعادة الترحيب الافتراضي\n"
+            "🛡️ `/antispam` تشغيل/إيقاف - حماية السبام\n"
+            "🌊 `/antiflood` تشغيل/إيقاف - حماية الفلود\n"
+            "🔗 `/antilink` تشغيل/إيقاف - منع الروابط\n"
+            "🔧 `/maintenance` - تفعيل/إلغاء وضع الصيانة\n"
+            "📝 `/setlog` [معرف] - تعيين قناة السجلات\n\n"
+            "💡 **مثال:** `/setwelcome مرحباً {user} في {chat}!`",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 📊 المعلومات ═══
+    elif data == "help_info":
+        await query.message.edit_text(
+            "📊 **أوامر المعلومات**\n\n"
+            "👤 `/info` - معلومات المستخدم (بالرد أو بدون)\n"
+            "📊 `/stats` - إحصائيات المجموعة الشاملة\n"
+            "👥 `/admins` - قائمة المشرفين\n"
+            "📋 `/log` - سجل آخر 10 إجراءات",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
+        )
+    
+    # ═══ 🚨 أخرى ═══
+    elif data == "help_other":
+        await query.message.edit_text(
+            "🚨 **أوامر أخرى**\n\n"
+            "🚨 `@admin` - إبلاغ المشرفين (في أي رسالة)\n"
+            "📢 `/announce` [نص] - إعلان رسمي من الإدارة\n"
+            "🚨 `/report` - بلاغ عن مستخدم (بالرد)\n"
+            "🔧 `/maintenance` - وضع الصيانة\n\n"
+            "💡 وضع الصيانة يحذف كل الرسائل الجديدة تلقائياً\n"
+            "ويسمح فقط للمشرفين بالكتابة",
+            parse_mode="Markdown",
+            reply_markup=back_keyboard()
         )
 
 # ═══════════════════════════════════════════════════════════════
@@ -1976,7 +1993,7 @@ def main():
     app.add_handler(CommandHandler("report", report_cmd))
     
     # معالجة الأزرار التفاعلية
-    app.add_handler(CallbackQueryHandler(callback_handler, pattern=r'^(help|help_|back|settings|view_rules)'))
+    app.add_handler(CallbackQueryHandler(callback_handler, pattern=r'^(help|help_|back|settings)'))
     app.add_handler(CallbackQueryHandler(view_rules_callback, pattern=r'^view_rules$'))
     app.add_handler(CallbackQueryHandler(unwarn_callback, pattern=r'^unwarn_'))
     

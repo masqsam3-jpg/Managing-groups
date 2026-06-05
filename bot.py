@@ -13,7 +13,7 @@ logging.getLogger("httpx" ).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # --- Configuration ---
-TOKEN = os.environ.get("TOKEN", "YOUR_BOT_TOKEN")
+TOKEN = os.environ.get("TOKEN", "8651632152:AAHMLhhLpG4m6Wh9WHvaqY0q54_B0L8xF4U")
 WELCOME_MESSAGE = "مرحباً بك يا {user_mention} في مجموعتنا! يرجى قراءة القواعد."
 GOODBYE_MESSAGE = "وداعاً {user_mention}! نأمل أن نراك مرة أخرى."
 WARN_LIMIT = 3

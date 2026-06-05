@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║    🛡️ بوت إدارة المجموعات المتكامل v5.0 - الحماية المتقدمة 🛡️    ║
+║    🛡️ بوت إدارة المجموعات المتكامل v5.1 - الحماية المتقدمة 🛡️    ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية                 ║
@@ -15,16 +15,15 @@ import sqlite3
 import threading
 import time
 import json
-import hashlib
+import random
 from datetime import datetime, timedelta
-from functools import wraps
 from flask import Flask, jsonify
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes
 )
-from telegram.constants import ChatMemberStatus, ParseMode
+from telegram.constants import ChatMemberStatus
 
 # ═════════════════════════════════════════════════════════════════
 # إعداد السجلات
@@ -44,7 +43,7 @@ WARN_LIMIT = 3
 DEFAULT_WELCOME = "مرحباً بك يا {user} في مجموعتنا! 🎉\nيرجى قراءة القوانين"
 DB_PATH = "bot_database.db"
 
-SUDO_USERS = {OWNER_ID}  # المستخدمين ذوي الصلاحيات العليا
+SUDO_USERS = {OWNER_ID}
 
 # ═════════════════════════════════════════════════════════════════
 # خادم Flask للحفاظ على البوت نشطاً
@@ -55,9 +54,7 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v5.0",
-        "version": "5.0.0",
-        "features": "Advanced Protection",
+        "bot": "Group Manager v5.1",
         "uptime": True
     }), 200
 
@@ -66,7 +63,7 @@ def run_flask():
     web_app.run(host='0.0.0.0', port=port)
 
 # ═════════════════════════════════════════════════════════════════
-# نظام قاعدة البيانات SQLite المتقدم
+# نظام قاعدة البيانات SQLite
 # ═════════════════════════════════════════════════════════════════
 class Database:
     def __init__(self, db_path: str):
@@ -77,15 +74,12 @@ class Database:
     def _get_conn(self):
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         return conn
 
     def _init_db(self):
         with self.lock:
             conn = self._get_conn()
             c = conn.cursor()
-
-            # إعدادات المجموعة
             c.execute('''CREATE TABLE IF NOT EXISTS group_settings (
                 chat_id INTEGER PRIMARY KEY,
                 welcome_msg TEXT DEFAULT '',
@@ -105,8 +99,6 @@ class Database:
                 anti_emoji INTEGER DEFAULT 0,
                 report_enabled INTEGER DEFAULT 1,
                 captcha_enabled INTEGER DEFAULT 0,
-                auto_delete INTEGER DEFAULT 0,
-                slow_mode INTEGER DEFAULT 0,
                 max_flood_msgs INTEGER DEFAULT 5,
                 flood_interval INTEGER DEFAULT 5,
                 raid_threshold INTEGER DEFAULT 5,
@@ -115,8 +107,6 @@ class Database:
                 warn_action TEXT DEFAULT 'mute',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
-
-            # التحذيرات
             c.execute('''CREATE TABLE IF NOT EXISTS warnings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, user_id INTEGER, reason TEXT DEFAULT '',
@@ -126,35 +116,25 @@ class Database:
                 chat_id INTEGER, user_id INTEGER, count INTEGER DEFAULT 0,
                 PRIMARY KEY(chat_id, user_id)
             )''')
-
-            # الملاحظات
             c.execute('''CREATE TABLE IF NOT EXISTS notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, name TEXT, content TEXT, created_by INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(chat_id, name)
             )''')
-
-            # الفلاتر
             c.execute('''CREATE TABLE IF NOT EXISTS filters (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, keyword TEXT, reply TEXT, created_by INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(chat_id, keyword)
             )''')
-
-            # الأقفال
             c.execute('''CREATE TABLE IF NOT EXISTS locks (
                 chat_id INTEGER, lock_type TEXT, locked_by INTEGER,
                 locked_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (chat_id, lock_type)
             )''')
-
-            # الكلمات المسيئة
             c.execute('''CREATE TABLE IF NOT EXISTS badwords (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, word TEXT, added_by INTEGER,
                 added_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(chat_id, word)
             )''')
-
-            # الإحصائيات
             c.execute('''CREATE TABLE IF NOT EXISTS group_stats (
                 chat_id INTEGER PRIMARY KEY,
                 total_messages INTEGER DEFAULT 0, total_joins INTEGER DEFAULT 0,
@@ -165,42 +145,26 @@ class Database:
                 total_spam_blocked INTEGER DEFAULT 0, total_flood_blocked INTEGER DEFAULT 0,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
-
-            # الكتم المؤقت
             c.execute('''CREATE TABLE IF NOT EXISTS temp_mutes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, user_id INTEGER, muted_by INTEGER,
                 mute_until TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
-
-            # سجل الإجراءات
             c.execute('''CREATE TABLE IF NOT EXISTS action_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER, user_id INTEGER, action TEXT,
                 target_id INTEGER DEFAULT 0, reason TEXT DEFAULT '',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
-
-            # القائمة البيضاء
             c.execute('''CREATE TABLE IF NOT EXISTS whitelist (
                 chat_id INTEGER, user_id INTEGER, added_by INTEGER,
                 added_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(chat_id, user_id)
             )''')
-
-            # المستخدمين المقيدين (الذين تجاوزوا الكابتشا)
             c.execute('''CREATE TABLE IF NOT EXISTS captcha_pending (
                 chat_id INTEGER, user_id INTEGER, message_id INTEGER,
                 correct_answer TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY(chat_id, user_id)
             )''')
-
-            # بيانات الغارات
-            c.execute('''CREATE TABLE IF NOT EXISTS raid_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER, join_count INTEGER, action_taken TEXT,
-                detected_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )''')
-
             conn.commit()
             conn.close()
 
@@ -505,24 +469,6 @@ class Database:
             conn.close()
             return [row[0] for row in rows]
 
-    def add_captcha(self, chat_id, user_id, message_id, answer):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO captcha_pending (chat_id, user_id, message_id, correct_answer) VALUES (?, ?, ?, ?)",
-                     (chat_id, user_id, message_id, answer))
-            conn.commit()
-            conn.close()
-
-    def get_captcha(self, chat_id, user_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT * FROM captcha_pending WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            row = c.fetchone()
-            conn.close()
-            return dict(row) if row else None
-
     def remove_captcha(self, chat_id, user_id):
         with self.lock:
             conn = self._get_conn()
@@ -530,6 +476,15 @@ class Database:
             c.execute("DELETE FROM captcha_pending WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
             conn.commit()
             conn.close()
+
+    def get_all_group_ids(self):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT chat_id FROM group_settings")
+            rows = c.fetchall()
+            conn.close()
+            return [row[0] for row in rows]
 
 
 db = Database(DB_PATH)
@@ -543,7 +498,6 @@ LOCK_TYPES = {
     "documents": "الملفات 📄", "links": "الروابط 🔗", "forward": "إعادة التوجيه ↗️",
     "inline": "الإنلاين ⚡", "polls": "الاستفتاءات 📊", "contacts": "جهات الاتصال 📱",
     "location": "الموقع 📍", "venue": "الأماكن 🏢", "text": "النصوص ✏️", "bots": "البوتات 🤖",
-    "video_note": "رسائل الفيديو 🔵", "game": "الألعاب 🎮", "sticker": "الملصقات 🎭",
 }
 
 MUTE_TIMES = [
@@ -552,31 +506,15 @@ MUTE_TIMES = [
     ("12 ساعة", "12h"), ("1 يوم", "1d"), ("3 أيام", "3d"), ("7 أيام", "7d"),
 ]
 
-RAID_ACTIONS = {
-    "kick": "طرد 👢",
-    "ban": "حظر 🚫",
-    "mute": "كتم 🔇",
-}
-
-LINK_ACTIONS = {
-    "delete": "حذف الرسالة 🗑️",
-    "mute": "كتم المستخدم 🔇",
-    "ban": "حظر المستخدم 🚫",
-    "warn": "تحذير ⚠️",
-}
-
-WARN_ACTIONS = {
-    "mute": "كتم 🔇",
-    "kick": "طرد 👢",
-    "ban": "حظر 🚫",
-}
+RAID_ACTIONS = {"kick": "طرد 👢", "ban": "حظر 🚫", "mute": "كتم 🔇"}
+LINK_ACTIONS = {"delete": "حذف الرسالة 🗑️", "mute": "كتم 🔇", "ban": "حظر 🚫", "warn": "تحذير ⚠️"}
+WARN_ACTIONS = {"mute": "كتم 🔇", "kick": "طرد 👢", "ban": "حظر 🚫"}
 
 # ═════════════════════════════════════════════════════════════════
 # أنظمة الحماية
 # ═════════════════════════════════════════════════════════════════
-
-# نظام الفلود
 flood_data = {}
+raid_data = {}
 
 def check_flood(chat_id, user_id, max_msgs=5, interval=5):
     now = time.time()
@@ -587,9 +525,6 @@ def check_flood(chat_id, user_id, max_msgs=5, interval=5):
     flood_data[chat_id][user_id].append(now)
     flood_data[chat_id][user_id] = [t for t in flood_data[chat_id][user_id] if now - t <= interval]
     return len(flood_data[chat_id][user_id]) > max_msgs
-
-# نظام الغارات
-raid_data = {}
 
 def check_raid(chat_id, threshold=5, window=10):
     now = time.time()
@@ -604,54 +539,48 @@ def record_join(chat_id):
         raid_data[chat_id] = []
     raid_data[chat_id].append(now)
 
-# كشف الروابط
-URL_PATTERN = re.compile(
-    r'(https?://[^\s]+)|(t\.me/[^\s]+)|(@\w+bot)',
-    re.IGNORECASE
-)
+URL_PATTERN = re.compile(r'(https?://[^\s]+)|(t\.me/[^\s]+)', re.IGNORECASE)
 
 def has_link(text):
     if not text:
         return False
     return bool(URL_PATTERN.search(text))
 
-# كشف السبام
-spam_patterns = [
-    re.compile(r'(.)\1{8,}'),  # تكرار حرف
-    re.compile(r'(.{3,})\1{4,}'),  # تكرار نمط
-]
-
 def is_spam(text):
     if not text:
         return False
-    for pattern in spam_patterns:
-        if pattern.search(text):
-            return True
+    if re.search(r'(.)\1{8,}', text):
+        return True
+    if re.search(r'(.{3,})\1{4,}', text):
+        return True
     return False
 
 # ═════════════════════════════════════════════════════════════════
 # دوال مساعدة
 # ═════════════════════════════════════════════════════════════════
 
-async def is_admin(update: Update, user_id: int = None) -> bool:
+async def check_is_admin(chat, user_id: int) -> bool:
+    """التحقق مما إذا كان المستخدم مشرفاً"""
     try:
-        if user_id is None:
-            user_id = update.effective_user.id
         if user_id == OWNER_ID or user_id in SUDO_USERS:
             return True
-        chat = update.effective_chat
         if chat is None:
             return False
         member = await chat.get_member(user_id)
         return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-    except:
+    except Exception as e:
+        logger.error(f"خطأ في التحقق من المشرف: {e}")
         return False
 
-async def is_bot_admin(chat, bot_id: int) -> bool:
+async def check_bot_admin(chat, bot_id: int) -> bool:
+    """التحقق مما إذا كان البوت مشرفاً"""
     try:
-        m = await chat.get_member(bot_id)
-        return m.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
-    except:
+        if chat is None:
+            return False
+        member = await chat.get_member(bot_id)
+        return member.status in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]
+    except Exception as e:
+        logger.error(f"خطأ في التحقق من مشرفية البوت: {e}")
         return False
 
 def mention(user_id, name):
@@ -674,7 +603,7 @@ def format_time(seconds):
     if seconds >= 86400:
         return f"{seconds // 86400} يوم"
     elif seconds >= 3600:
-        return f"{seconds // 3600} ساعة و {(seconds % 3600) // 60} دقيقة"
+        return f"{seconds // 3600} ساعة"
     elif seconds >= 60:
         return f"{seconds // 60} دقيقة"
     else:
@@ -690,11 +619,10 @@ async def send_log(chat_id, text, context):
             pass
 
 # ═════════════════════════════════════════════════════════════════
-# نظام اللوحات (Keyboards) - واجهة أزرار متكاملة
+# نظام اللوحات (Keyboards)
 # ═════════════════════════════════════════════════════════════════
 
 def kb_main(is_adm=False):
-    """القائمة الرئيسية"""
     buttons = [
         [InlineKeyboardButton("🛡️ الإشراف", callback_data="menu_admin"),
          InlineKeyboardButton("🔐 الحماية", callback_data="menu_protection")],
@@ -722,7 +650,6 @@ def kb_back_cancel():
     ])
 
 def kb_admin():
-    """أزرار الإشراف"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🚫 حظر", callback_data="act_ban"),
          InlineKeyboardButton("✅ إلغاء حظر", callback_data="act_unban")],
@@ -738,7 +665,6 @@ def kb_admin():
     ])
 
 def kb_protection(chat_id):
-    """أزرار الحماية المتقدمة"""
     s = db.get_settings(chat_id)
     buttons = [
         [InlineKeyboardButton(f"{'✅' if s.get('anti_raid',1) else '❌'} حماية الغارات", callback_data="tog_raid"),
@@ -762,7 +688,6 @@ def kb_protection(chat_id):
     return InlineKeyboardMarkup(buttons)
 
 def kb_mute_time(target_id):
-    """أزرار اختيار مدة الكتم"""
     buttons = []
     row = []
     for label, val in MUTE_TIMES:
@@ -776,7 +701,6 @@ def kb_mute_time(target_id):
     return InlineKeyboardMarkup(buttons)
 
 def kb_content():
-    """أزرار المحتوى"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📌 تثبيت رسالة", callback_data="act_pin"),
          InlineKeyboardButton("📌 إلغاء التثبيت", callback_data="act_unpin")],
@@ -787,7 +711,6 @@ def kb_content():
     ])
 
 def kb_notes():
-    """أزرار الملاحظات"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💾 حفظ ملاحظة", callback_data="act_savenote"),
          InlineKeyboardButton("📖 استرجاع ملاحظة", callback_data="act_getnote")],
@@ -797,7 +720,6 @@ def kb_notes():
     ])
 
 def kb_notes_list(chat_id):
-    """أزرار قائمة الملاحظات"""
     notes = db.get_all_notes(chat_id)
     if not notes:
         return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="menu_notes")]])
@@ -808,7 +730,6 @@ def kb_notes_list(chat_id):
     return InlineKeyboardMarkup(buttons)
 
 def kb_filters():
-    """أزرار الفلاتر"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة فلتر", callback_data="act_addfilter"),
          InlineKeyboardButton("➖ حذف فلتر", callback_data="act_delfilter")],
@@ -816,28 +737,7 @@ def kb_filters():
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
-def kb_filters_list(chat_id):
-    """أزرار قائمة الفلاتر"""
-    filters_list = db.get_all_filters(chat_id)
-    if not filters_list:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data="menu_filters")]])
-    buttons = []
-    for kw in filters_list:
-        buttons.append([InlineKeyboardButton(f"🔍 {kw}", callback_data=f"filter_{kw}")])
-    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="menu_filters")])
-    return InlineKeyboardMarkup(buttons)
-
-def kb_locks():
-    """أزرار الأقفال"""
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔒 قفل الكل", callback_data="act_lockall"),
-         InlineKeyboardButton("🔓 فتح الكل", callback_data="act_unlockall")],
-        [InlineKeyboardButton("📋 عرض الأقفال", callback_data="act_showlocks")],
-        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ])
-
 def kb_lock_types(chat_id):
-    """أزرار أنواع الأقفال"""
     locked = db.get_all_locks(chat_id)
     buttons = []
     row = []
@@ -849,11 +749,10 @@ def kb_lock_types(chat_id):
             row = []
     if row:
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("🔙 رجوع", callback_data="menu_locks")])
+    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")])
     return InlineKeyboardMarkup(buttons)
 
 def kb_badwords():
-    """أزرار الكلمات"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة كلمة", callback_data="act_addbadword"),
          InlineKeyboardButton("➖ حذف كلمة", callback_data="act_delbadword")],
@@ -862,23 +761,17 @@ def kb_badwords():
     ])
 
 def kb_settings(chat_id):
-    """أزرار الإعدادات"""
     s = db.get_settings(chat_id)
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if s.get('maintenance_mode',0) else '❌'} وضع الصيانة", callback_data="tog_maintenance"),
          InlineKeyboardButton(f"{'✅' if s.get('report_enabled',1) else '❌'} البلاغات", callback_data="tog_report")],
         [InlineKeyboardButton("💬 تعيين الترحيب", callback_data="act_setwelcome"),
          InlineKeyboardButton("🔄 ترحيب افتراضي", callback_data="act_resetwelcome")],
-        [InlineKeyboardButton("📝 قناة السجلات", callback_data="act_setlog"),
-         InlineKeyboardButton("🗑️ تنظيف المجموعة", callback_data="act_cleanup")],
-        [InlineKeyboardButton("💾 نسخ احتياطي", callback_data="act_backup"),
-         InlineKeyboardButton("📥 استعادة النسخ", callback_data="act_restore")],
+        [InlineKeyboardButton("📝 قناة السجلات", callback_data="act_setlog")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 def kb_info():
-    """أزرار المعلومات"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👤 معلومات مستخدم", callback_data="act_userinfo"),
          InlineKeyboardButton("📊 إحصائيات المجموعة", callback_data="act_groupstats")],
@@ -889,7 +782,6 @@ def kb_info():
     ])
 
 def kb_other():
-    """أزرار أخرى"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 إعلان", callback_data="act_announce"),
          InlineKeyboardButton("🚨 بلاغ", callback_data="act_report")],
@@ -897,7 +789,6 @@ def kb_other():
     ])
 
 def kb_owner():
-    """أزرار أدوات المالك"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 إعلان لكل المجموعات", callback_data="owner_broadcast"),
          InlineKeyboardButton("📊 إحصائيات عامة", callback_data="owner_stats")],
@@ -905,64 +796,65 @@ def kb_owner():
     ])
 
 def kb_raid_settings(chat_id):
-    """أزرار إعدادات الغارة"""
     s = db.get_settings(chat_id)
     current_action = s.get('raid_action', 'kick')
     threshold = s.get('raid_threshold', 5)
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"📊 حد الغارة: {threshold}", callback_data="set_raid_threshold")],
         [InlineKeyboardButton(f"{'🔵' if current_action=='kick' else '⚪'} طرد", callback_data="set_raid_kick"),
          InlineKeyboardButton(f"{'🔵' if current_action=='ban' else '⚪'} حظر", callback_data="set_raid_ban"),
          InlineKeyboardButton(f"{'🔵' if current_action=='mute' else '⚪'} كتم", callback_data="set_raid_mute")],
         [InlineKeyboardButton("🔙 حماية", callback_data="menu_protection")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 def kb_link_settings(chat_id):
-    """أزرار إعدادات الروابط"""
     s = db.get_settings(chat_id)
     current_action = s.get('link_action', 'delete')
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'🔵' if current_action=='delete' else '⚪'} حذف الرسالة", callback_data="set_link_delete"),
          InlineKeyboardButton(f"{'🔵' if current_action=='warn' else '⚪'} تحذير", callback_data="set_link_warn")],
         [InlineKeyboardButton(f"{'🔵' if current_action=='mute' else '⚪'} كتم", callback_data="set_link_mute"),
          InlineKeyboardButton(f"{'🔵' if current_action=='ban' else '⚪'} حظر", callback_data="set_link_ban")],
         [InlineKeyboardButton("🔙 حماية", callback_data="menu_protection")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 def kb_warn_settings(chat_id):
-    """أزرار إعدادات التحذير"""
     s = db.get_settings(chat_id)
     current_action = s.get('warn_action', 'mute')
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'🔵' if current_action=='mute' else '⚪'} كتم عند الحد", callback_data="set_warn_mute"),
          InlineKeyboardButton(f"{'🔵' if current_action=='kick' else '⚪'} طرد عند الحد", callback_data="set_warn_kick")],
         [InlineKeyboardButton(f"{'🔵' if current_action=='ban' else '⚪'} حظر عند الحد", callback_data="set_warn_ban")],
         [InlineKeyboardButton("🔙 حماية", callback_data="menu_protection")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
-def kb_whitelist(chat_id):
-    """أزرار القائمة البيضاء"""
-    buttons = [
+def kb_whitelist():
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ إضافة للقائمة البيضاء", callback_data="wl_add"),
          InlineKeyboardButton("➖ إزالة من القائمة", callback_data="wl_remove")],
         [InlineKeyboardButton("📋 عرض القائمة البيضاء", callback_data="wl_show")],
         [InlineKeyboardButton("🔙 حماية", callback_data="menu_protection")]
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 # ═════════════════════════════════════════════════════════════════
-# أوامر البوت
+# أوامر /start و /panel
 # ═════════════════════════════════════════════════════════════════
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """عرض لوحة التحكم الرئيسية"""
-    is_adm = await is_admin(update)
+    chat = update.effective_chat
+    user = update.effective_user
+    is_adm = False
+
+    if chat and chat.type != "private":
+        is_adm = await check_is_admin(chat, user.id)
+
+    if user.id == OWNER_ID:
+        is_adm = True
+
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v5.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v5.1</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "📊 <b>إحصائيات شاملة</b> لكل ما يحدث في مجموعتك\n\n"
@@ -971,7 +863,6 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=kb_main(is_adm))
 
 async def panel_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """عرض لوحة التحكم"""
     await start_cmd(update, context)
 
 
@@ -986,150 +877,115 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user_id = query.from_user.id
 
-    admin = await is_admin(update, user_id)
-    bot_adm = await is_bot_admin(chat, context.bot.id) if chat else False
+    is_adm = await check_is_admin(chat, user_id) if chat else (user_id == OWNER_ID)
+    bot_adm = await check_bot_admin(chat, context.bot.id) if chat else False
     is_owner = user_id == OWNER_ID
 
-    # ═══════════════════════════════════════════════════
-    # القائمة الرئيسية
-    # ═══════════════════════════════════════════════════
+    # ═══ القائمة الرئيسية ═══
     if data == "back":
         await query.message.edit_text(
-            "🛡️ <b>بوت إدارة المجموعات المتكامل v5.0</b>\n\n"
+            "🛡️ <b>بوت إدارة المجموعات المتكامل v5.1</b>\n\n"
             "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
             "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
             "📊 <b>إحصائيات شاملة</b> لكل ما يحدث في مجموعتك\n\n"
             "👇 اختر أي قسم من الأزرار أدناه:",
-            parse_mode="HTML", reply_markup=kb_main(admin or is_owner)
+            parse_mode="HTML", reply_markup=kb_main(is_adm or is_owner)
         )
 
     elif data == "cancel":
         context.user_data.pop("waiting", None)
         context.user_data.pop("target_id", None)
         context.user_data.pop("note_name", None)
+        context.user_data.pop("filter_kw", None)
         await query.message.edit_text(
             "❌ تم الإلغاء.\n\n👇 اختر من القائمة:",
-            parse_mode="HTML", reply_markup=kb_main(admin or is_owner)
+            parse_mode="HTML", reply_markup=kb_main(is_adm or is_owner)
         )
 
-    # ═══════════════════════════════════════════════════
-    # فتح القوائم
-    # ═══════════════════════════════════════════════════
+    # ═══ فتح القوائم ═══
     elif data == "menu_admin":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
             "🛡️ <b>أوامر الإشراف</b>\n\n"
-            "اختر الإجراء المطلوب:\n\n"
-            "📌 <b>لحظر/كتم/طرد/تحذير:</b> رد على رسالة المستخدم ثم اضغط الزر\n"
-            "📌 <b>لحذف رسالة:</b> رد على الرسالة ثم اضغط حذف\n"
-            "📌 <b>لحذف متعدد:</b> رد على رسالة واكتب العدد",
+            "📌 لحظر/كتم/طرد/تحذير: رد على رسالة المستخدم ثم اضغط الزر\n"
+            "📌 لحذف رسالة: رد على الرسالة ثم اضغط حذف",
             parse_mode="HTML", reply_markup=kb_admin()
         )
 
     elif data == "menu_protection":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "🔐 <b>نظام الحماية المتقدم</b>\n\n"
-            "🛡️ حماية شاملة لمجموعتك ضد:\n"
-            "• الغارات (دخول جماعي مفاجئ)\n"
-            "• السبام والفلود\n"
-            "• الروابط المشبوهة\n"
-            "• البوتات غير المرخصة\n"
-            "• القنوات والتوجيه\n"
-            "• الكلمات المسيئة\n\n"
-            "اضغط على أي حماية لتفعيلها/تعطيلها:",
+            "🔐 <b>نظام الحماية المتقدم</b>\n\nاضغط على أي حماية لتفعيلها/تعطيلها:",
             parse_mode="HTML", reply_markup=kb_protection(chat.id)
         )
 
     elif data == "menu_content":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "📌 <b>إدارة المحتوى</b>\n\nاختر الإجراء المطلوب:",
-            parse_mode="HTML", reply_markup=kb_content()
+            "📌 <b>إدارة المحتوى</b>\n\nاختر الإجراء:", parse_mode="HTML", reply_markup=kb_content()
         )
 
     elif data == "menu_notes":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "📝 <b>نظام الملاحظات</b>\n\nاحفظ واسترجع ملاحظات لمجموعتك:",
-            parse_mode="HTML", reply_markup=kb_notes()
+            "📝 <b>نظام الملاحظات</b>\n\nاحفظ واسترجع ملاحظات:", parse_mode="HTML", reply_markup=kb_notes()
         )
 
     elif data == "menu_filters":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "🔍 <b>نظام الفلاتر</b>\n\nأنشئ ردود تلقائية على كلمات مفتاحية:",
-            parse_mode="HTML", reply_markup=kb_filters()
+            "🔍 <b>نظام الفلاتر</b>\n\nأنشئ ردود تلقائية:", parse_mode="HTML", reply_markup=kb_filters()
         )
 
     elif data == "menu_locks":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "🔒 <b>نظام الأقفال</b>\n\nاختر نوع الرسالة لقفله:",
-            parse_mode="HTML", reply_markup=kb_lock_types(chat.id)
+            "🔒 <b>نظام الأقفال</b>\n\nاختر نوع الرسالة لقفله:", parse_mode="HTML", reply_markup=kb_lock_types(chat.id)
         )
 
     elif data == "menu_badwords":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "🔤 <b>فلتر الكلمات المسيئة</b>\n\nأضف كلمات محظورة تُحذف تلقائياً:",
-            parse_mode="HTML", reply_markup=kb_badwords()
+            "🔤 <b>فلتر الكلمات المسيئة</b>:", parse_mode="HTML", reply_markup=kb_badwords()
         )
 
     elif data == "menu_settings":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "⚙️ <b>إعدادات المجموعة</b>\n\nاضغط على أي إعداد لتغييره:",
-            parse_mode="HTML", reply_markup=kb_settings(chat.id)
+            "⚙️ <b>إعدادات المجموعة</b>:", parse_mode="HTML", reply_markup=kb_settings(chat.id)
         )
 
     elif data == "menu_info":
         await query.message.edit_text(
-            "📊 <b>المعلومات</b>\n\nاختر المعلومات المطلوبة:",
-            parse_mode="HTML", reply_markup=kb_info()
+            "📊 <b>المعلومات</b>:", parse_mode="HTML", reply_markup=kb_info()
         )
 
     elif data == "menu_other":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         await query.message.edit_text(
-            "🚨 <b>أوامر أخرى</b>\n\nاختر الإجراء:",
-            parse_mode="HTML", reply_markup=kb_other()
+            "🚨 <b>أوامر أخرى</b>:", parse_mode="HTML", reply_markup=kb_other()
         )
 
     elif data == "menu_owner":
         if not is_owner:
-            await query.answer("👑 للمالك فقط!", show_alert=True)
-            return
+            await query.answer("👑 للمالك فقط!", show_alert=True); return
         await query.message.edit_text(
-            "👑 <b>أدوات المالك</b>\n\nهذه الأدوات متاحة فقط لصاحب البوت:",
-            parse_mode="HTML", reply_markup=kb_owner()
+            "👑 <b>أدوات المالك</b>:", parse_mode="HTML", reply_markup=kb_owner()
         )
 
-    # ═══════════════════════════════════════════════════
-    # تبديل الحماية
-    # ═══════════════════════════════════════════════════
+    # ═══ تبديل الحماية ═══
     elif data.startswith("tog_"):
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         toggle_map = {
             "tog_flood": ("anti_flood", "حماية الفلود"),
             "tog_spam": ("anti_spam", "حماية السبام"),
@@ -1153,146 +1009,85 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.update_setting(chat.id, key, new_val)
             status = "مفعّل ✅" if new_val else "معطّل ❌"
             await query.message.edit_text(
-                f"🔐 <b>نظام الحماية المتقدم</b>\n\n"
-                f"تم {'تفعيل' if new_val else 'تعطيل'} <b>{name}</b> {status}\n\n"
-                f"اضغط على أي حماية لتفعيلها/تعطيلها:",
+                f"🔐 <b>نظام الحماية</b>\n\nتم {'تفعيل' if new_val else 'تعطيل'} <b>{name}</b> {status}\n\nاضغط على أي حماية:",
                 parse_mode="HTML", reply_markup=kb_protection(chat.id)
             )
 
-    # ═══════════════════════════════════════════════════
-    # إعدادات الغارة
-    # ═══════════════════════════════════════════════════
+    # ═══ إعدادات الغارة ═══
     elif data == "raid_settings":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         await query.message.edit_text(
-            "⚡ <b>إعدادات حماية الغارات</b>\n\n"
-            "📌 حد الغارة: عدد الأعضاء الجدد في نافذة 10 ثوان\n"
-            "📌 الإجراء: ما يحدث عند كشف غارة\n\n"
-            "اختر الإعدادات:",
-            parse_mode="HTML", reply_markup=kb_raid_settings(chat.id)
+            "⚡ <b>إعدادات حماية الغارات</b>:", parse_mode="HTML", reply_markup=kb_raid_settings(chat.id)
         )
-
     elif data == "set_raid_threshold":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "set_raid_threshold"
         await query.message.edit_text(
-            "📊 <b>تعيين حد الغارة</b>\n\n"
-            "اكتب عدد الأعضاء الجدد الذي يعتبر غارة\n"
-            "(القيمة الحالية محفوظة في النظام)\n\n"
-            "مثال: <code>5</code> أو <code>3</code>\n\n"
-            "⏳ بانتظار كتابتك...",
+            "📊 <b>تعيين حد الغارة</b>\n\nاكتب عدد الأعضاء (2-50):\n\n⏳ بانتظار كتابتك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data.startswith("set_raid_"):
-        if not admin:
-            return
+        if not is_adm: return
         action = data.replace("set_raid_", "")
         if action in RAID_ACTIONS:
             db.update_setting(chat.id, "raid_action", action)
             await query.message.edit_text(
-                f"⚡ <b>إعدادات حماية الغارات</b>\n\n"
-                f"تم تعيين الإجراء: {RAID_ACTIONS[action]}\n\n"
-                f"اختر الإعدادات:",
+                f"⚡ <b>إعدادات الغارات</b>\n\nالإجراء: {RAID_ACTIONS[action]}",
                 parse_mode="HTML", reply_markup=kb_raid_settings(chat.id)
             )
 
-    # ═══════════════════════════════════════════════════
-    # إعدادات الروابط
-    # ═══════════════════════════════════════════════════
+    # ═══ إعدادات الروابط ═══
     elif data == "link_settings":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         await query.message.edit_text(
-            "🔗 <b>إعدادات منع الروابط</b>\n\n"
-            "اختر الإجراء عند إرسال رابط:\n\n"
-            "• حذف الرسالة: حذف فقط بدون عقاب\n"
-            "• تحذير: حذف + تحذير للمستخدم\n"
-            "• كتم: حذف + كتم المستخدم\n"
-            "• حظر: حذف + حظر المستخدم",
-            parse_mode="HTML", reply_markup=kb_link_settings(chat.id)
+            "🔗 <b>إعدادات منع الروابط</b>:", parse_mode="HTML", reply_markup=kb_link_settings(chat.id)
         )
-
     elif data.startswith("set_link_"):
-        if not admin:
-            return
+        if not is_adm: return
         action = data.replace("set_link_", "")
         if action in LINK_ACTIONS:
             db.update_setting(chat.id, "link_action", action)
             await query.message.edit_text(
-                f"🔗 <b>إعدادات منع الروابط</b>\n\n"
-                f"تم تعيين الإجراء: {LINK_ACTIONS[action]}\n\n"
-                f"اختر الإعدادات:",
+                f"🔗 <b>إعدادات الروابط</b>\n\nالإجراء: {LINK_ACTIONS[action]}",
                 parse_mode="HTML", reply_markup=kb_link_settings(chat.id)
             )
 
-    # ═══════════════════════════════════════════════════
-    # إعدادات التحذير
-    # ═══════════════════════════════════════════════════
+    # ═══ إعدادات التحذير ═══
     elif data == "warn_settings":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         await query.message.edit_text(
-            "⚠️ <b>إعدادات التحذيرات</b>\n\n"
-            f"الحد الأقصى: {WARN_LIMIT} تحذيرات\n\n"
-            "اختر ما يحدث عند بلوغ الحد:",
-            parse_mode="HTML", reply_markup=kb_warn_settings(chat.id)
+            "⚠️ <b>إعدادات التحذيرات</b>\n\nالحد: {WARN_LIMIT}:", parse_mode="HTML", reply_markup=kb_warn_settings(chat.id)
         )
-
     elif data.startswith("set_warn_"):
-        if not admin:
-            return
+        if not is_adm: return
         action = data.replace("set_warn_", "")
         if action in WARN_ACTIONS:
             db.update_setting(chat.id, "warn_action", action)
             await query.message.edit_text(
-                f"⚠️ <b>إعدادات التحذيرات</b>\n\n"
-                f"تم تعيين الإجراء عند الحد: {WARN_ACTIONS[action]}\n\n"
-                f"اختر الإعدادات:",
+                f"⚠️ <b>إعدادات التحذير</b>\n\nالإجراء: {WARN_ACTIONS[action]}",
                 parse_mode="HTML", reply_markup=kb_warn_settings(chat.id)
             )
 
-    # ═══════════════════════════════════════════════════
-    # القائمة البيضاء
-    # ═══════════════════════════════════════════════════
+    # ═══ القائمة البيضاء ═══
     elif data == "menu_whitelist":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         await query.message.edit_text(
-            "🛡️ <b>القائمة البيضاء</b>\n\n"
-            "المستخدمون في القائمة البيضاء معفون من جميع أنظمة الحماية\n\n"
-            "اختر الإجراء:",
-            parse_mode="HTML", reply_markup=kb_whitelist(chat.id)
+            "🛡️ <b>القائمة البيضاء</b>:", parse_mode="HTML", reply_markup=kb_whitelist()
         )
-
     elif data == "wl_add":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "wl_add"
         await query.message.edit_text(
-            "➕ <b>إضافة للقائمة البيضاء</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد إضافته\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "➕ <b>إضافة للقائمة البيضاء</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "wl_remove":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "wl_remove"
         await query.message.edit_text(
-            "➖ <b>إزالة من القائمة البيضاء</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد إزالته\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "➖ <b>إزالة من القائمة البيضاء</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "wl_show":
         wl = db.get_whitelist(chat.id)
         if wl:
@@ -1300,75 +1095,50 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for uid in wl:
                 text += f"• <code>{uid}</code>\n"
         else:
-            text = "🛡️ <b>القائمة البيضاء فارغة</b>\n\nلم تتم إضافة أي مستخدم بعد."
-        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_whitelist(chat.id))
+            text = "🛡️ القائمة البيضاء فارغة."
+        await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_whitelist())
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات الإشراف
-    # ═══════════════════════════════════════════════════
+    # ═══ إجراءات الإشراف ═══
     elif data == "act_ban":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "ban"
         await query.message.edit_text(
-            "🚫 <b>حظر مستخدم</b>\n\n"
-            "📌 <b>الخطوات:</b>\n"
-            "1️⃣ رد على رسالة المستخدم المراد حظره\n"
-            "2️⃣ اكتب السبب (أو أرسل نقطة . بدون سبب)\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "🚫 <b>حظر مستخدم</b>\n\nرد على رسالة المستخدم + اكتب السبب (أو . بدون سبب)\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_unban":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "unban"
         await query.message.edit_text(
-            "✅ <b>إلغاء حظر</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد إلغاء حظره\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "✅ <b>إلغاء حظر</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_mute":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "mute"
         await query.message.edit_text(
-            "🔇 <b>كتم مستخدم</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد كتمه\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "🔇 <b>كتم مستخدم</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_unmute":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "unmute"
         await query.message.edit_text(
-            "🔊 <b>إلغاء كتم</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد إلغاء كتمه\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "🔊 <b>إلغاء كتم</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_tmute":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "tmute_select"
         await query.message.edit_text(
-            "⏱️ <b>كتم مؤقت</b>\n\n"
-            "📌 رد على رسالة المستخدم أولاً\n"
-            "ثم اختر المدة من الأزرار\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "⏱️ <b>كتم مؤقت</b>\n\nرد على رسالة المستخدم أولاً ثم اختر المدة\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data.startswith("tmute_"):
         parts = data.split("_")
         if len(parts) >= 3:
@@ -1376,8 +1146,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             time_val = parts[2]
             seconds = parse_time(time_val)
             if seconds <= 0:
-                await query.answer("❌ صيغة وقت خاطئة!", show_alert=True)
-                return
+                await query.answer("❌ صيغة وقت خاطئة!", show_alert=True); return
             try:
                 until = datetime.now() + timedelta(seconds=seconds)
                 perms = ChatPermissions(can_send_messages=False)
@@ -1390,262 +1159,130 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 db.add_temp_mute(chat.id, target_id, user_id, until.strftime("%Y-%m-%d %H:%M:%S"))
                 db.increment_stat(chat.id, "total_mutes")
                 db.log_action(chat.id, user_id, f"tmute_{time_str}", target_id)
-                await send_log(chat.id, f"⏱️ كتم مؤقت: {mention(user_id, query.from_user.first_name)} كتم {mention(target_id, 'مستخدم')} لمدة {time_str}", context)
             except Exception as e:
-                await query.message.edit_text(
-                    f"❌ خطأ: {str(e)}", parse_mode="HTML", reply_markup=kb_admin()
-                )
+                await query.message.edit_text(f"❌ خطأ: {str(e)}", parse_mode="HTML", reply_markup=kb_admin())
         context.user_data.pop("waiting", None)
         context.user_data.pop("target_id", None)
 
     elif data == "act_kick":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm or not bot_adm:
+            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True); return
         context.user_data["waiting"] = "kick"
         await query.message.edit_text(
-            "👢 <b>طرد مستخدم</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد طرده\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "👢 <b>طرد مستخدم</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_warn":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         context.user_data["waiting"] = "warn"
         await query.message.edit_text(
-            "⚠️ <b>تحذير مستخدم</b>\n\n"
-            "📌 رد على رسالة المستخدم واكتب السبب (أو . بدون سبب)\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "⚠️ <b>تحذير مستخدم</b>\n\nرد على رسالة المستخدم + اكتب السبب\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_unwarn":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         context.user_data["waiting"] = "unwarn"
         await query.message.edit_text(
-            "✅ <b>إزالة تحذيرات</b>\n\n"
-            "📌 رد على رسالة المستخدم\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
+            "✅ <b>إزالة تحذيرات</b>\n\nرد على رسالة المستخدم\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_del":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         context.user_data["waiting"] = "del"
         await query.message.edit_text(
-            "🗑️ <b>حذف رسالة</b>\n\n"
-            "📌 رد على الرسالة المراد حذفها\n\n"
-            "⏳ بانتظار ردك على الرسالة...",
+            "🗑️ <b>حذف رسالة</b>\n\nرد على الرسالة\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_purge":
-        if not admin or not bot_adm:
-            await query.answer("⛔ البوت يحتاج صلاحيات مشرف!", show_alert=True)
-            return
+        if not is_adm:
+            await query.answer("⛔ للمشرفين فقط!", show_alert=True); return
         context.user_data["waiting"] = "purge"
         await query.message.edit_text(
-            "🗑️ <b>حذف متعدد</b>\n\n"
-            "📌 رد على رسالة واكتب عدد الرسائل للحذف\n"
-            "مثال: <code>10</code>\n\n"
-            "⏳ بانتظار ردك على الرسالة...",
+            "🗑️ <b>حذف متعدد</b>\n\nرد على رسالة واكتب العدد\n\n⏳ بانتظار ردك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات المحتوى
-    # ═══════════════════════════════════════════════════
+    # ═══ المحتوى ═══
     elif data == "act_pin":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "pin"
-        await query.message.edit_text(
-            "📌 <b>تثبيت رسالة</b>\n\n"
-            "📌 رد على الرسالة المراد تثبيتها\n\n"
-            "⏳ بانتظار ردك على الرسالة...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("📌 رد على الرسالة لتثبيتها\n\n⏳ بانتظار ردك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_unpin":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         try:
             await chat.unpin_all_messages()
-            await query.message.edit_text(
-                "📌 تم إلغاء تثبيت جميع الرسائل ✅",
-                parse_mode="HTML", reply_markup=kb_content()
-            )
-            db.log_action(chat.id, user_id, "unpin")
+            await query.message.edit_text("📌 تم إلغاء التثبيت ✅", parse_mode="HTML", reply_markup=kb_content())
         except:
             await query.answer("❌ لا يمكن الإلغاء!", show_alert=True)
-
     elif data == "act_setrules":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "setrules"
-        await query.message.edit_text(
-            "📋 <b>تعيين القوانين</b>\n\n"
-            "📝 اكتب القوانين الجديدة:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("📋 اكتب القوانين الجديدة:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_rules":
         settings = db.get_settings(chat.id)
         rules = settings.get("rules", "")
         if rules:
-            await query.message.edit_text(
-                f"📋 <b>قوانين المجموعة:</b>\n\n{rules}",
-                parse_mode="HTML", reply_markup=kb_back()
-            )
+            await query.message.edit_text(f"📋 <b>القوانين:</b>\n\n{rules}", parse_mode="HTML", reply_markup=kb_back())
         else:
-            await query.message.edit_text(
-                "📋 لم يتم تعيين قوانين بعد.\n\nاضغط تعيين القوانين لإضافتها.",
-                parse_mode="HTML", reply_markup=kb_content()
-            )
-
+            await query.message.edit_text("📋 لم يتم تعيين قوانين.", parse_mode="HTML", reply_markup=kb_content())
     elif data == "act_clearrules":
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         db.update_setting(chat.id, "rules", "")
-        await query.message.edit_text(
-            "📋 تم حذف القوانين ✅",
-            parse_mode="HTML", reply_markup=kb_content()
-        )
-        db.log_action(chat.id, user_id, "clear_rules")
+        await query.message.edit_text("📋 تم حذف القوانين ✅", parse_mode="HTML", reply_markup=kb_content())
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات الملاحظات
-    # ═══════════════════════════════════════════════════
+    # ═══ الملاحظات ═══
     elif data == "act_savenote":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "savenote_name"
-        await query.message.edit_text(
-            "💾 <b>حفظ ملاحظة</b>\n\n"
-            "📝 الخطوة 1: اكتب اسم الملاحظة\n"
-            "(كلمة واحدة بدون مسافات)\n\n"
-            "⏳ بانتظار كتابة الاسم...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("💾 اكتب اسم الملاحظة (كلمة واحدة):\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_getnote":
-        if not admin:
-            return
         notes = db.get_all_notes(chat.id)
         if not notes:
-            await query.message.edit_text(
-                "📝 لا توجد ملاحظات محفوظة.",
-                parse_mode="HTML", reply_markup=kb_notes()
-            )
+            await query.message.edit_text("📝 لا توجد ملاحظات.", parse_mode="HTML", reply_markup=kb_notes())
         else:
-            await query.message.edit_text(
-                "📖 <b>اختر ملاحظة لاسترجاعها:</b>",
-                parse_mode="HTML", reply_markup=kb_notes_list(chat.id)
-            )
-
+            await query.message.edit_text("📖 اختر ملاحظة:", parse_mode="HTML", reply_markup=kb_notes_list(chat.id))
     elif data.startswith("note_"):
         note_name = data[5:]
         content = db.get_note(chat.id, note_name)
         if content:
-            await query.message.edit_text(
-                f"📝 <b>{note_name}:</b>\n\n{content}",
-                parse_mode="HTML", reply_markup=kb_back()
-            )
+            await query.message.edit_text(f"📝 <b>{note_name}:</b>\n\n{content}", parse_mode="HTML", reply_markup=kb_back())
         else:
-            await query.message.edit_text(
-                "❌ الملاحظة غير موجودة.",
-                parse_mode="HTML", reply_markup=kb_notes()
-            )
-
+            await query.message.edit_text("❌ غير موجودة.", parse_mode="HTML", reply_markup=kb_notes())
     elif data == "act_allnotes":
         notes = db.get_all_notes(chat.id)
         if notes:
-            text = "📋 <b>الملاحظات المحفوظة:</b>\n\n"
-            for n in notes:
-                text += f"• 📝 {n}\n"
+            text = "📋 <b>الملاحظات:</b>\n\n" + "\n".join([f"• 📝 {n}" for n in notes])
         else:
-            text = "📋 لا توجد ملاحظات محفوظة."
+            text = "📋 لا توجد ملاحظات."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_notes())
-
     elif data == "act_delnote":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "delnote"
-        await query.message.edit_text(
-            "🗑️ <b>حذف ملاحظة</b>\n\n"
-            "📝 اكتب اسم الملاحظة المراد حذفها:\n\n"
-            "⏳ بانتظار كتابة الاسم...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
+        await query.message.edit_text("🗑️ اكتب اسم الملاحظة:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات الفلاتر
-    # ═══════════════════════════════════════════════════
+    # ═══ الفلاتر ═══
     elif data == "act_addfilter":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "addfilter_kw"
-        await query.message.edit_text(
-            "➕ <b>إضافة فلتر</b>\n\n"
-            "📝 الخطوة 1: اكتب الكلمة المفتاحية\n\n"
-            "⏳ بانتظار كتابة الكلمة...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("➕ اكتب الكلمة المفتاحية:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_delfilter":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "delfilter"
-        await query.message.edit_text(
-            "➖ <b>حذف فلتر</b>\n\n"
-            "📝 اكتب الكلمة المفتاحية المراد حذف فلترها:\n\n"
-            "⏳ بانتظار كتابة الكلمة...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("➖ اكتب الكلمة:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_allfilters":
-        filters_list = db.get_all_filters(chat.id)
-        if filters_list:
-            text = "📋 <b>الفلاتر المحفوظة:</b>\n\n"
-            for kw in filters_list:
-                text += f"• 🔍 {kw}\n"
+        fl = db.get_all_filters(chat.id)
+        if fl:
+            text = "📋 <b>الفلاتر:</b>\n\n" + "\n".join([f"• 🔍 {kw}" for kw in fl])
         else:
-            text = "📋 لا توجد فلاتر محفوظة."
+            text = "📋 لا توجد فلاتر."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_filters())
 
-    elif data.startswith("filter_"):
-        kw = data[7:]
-        reply_text = db.get_filter(chat.id, kw)
-        if reply_text:
-            await query.message.edit_text(
-                f"🔍 <b>فلتر: {kw}</b>\n\nالرد: {reply_text}",
-                parse_mode="HTML", reply_markup=kb_back()
-            )
-        else:
-            await query.message.edit_text(
-                "❌ الفلتر غير موجود.",
-                parse_mode="HTML", reply_markup=kb_filters()
-            )
-
-    # ═══════════════════════════════════════════════════
-    # إجراءات الأقفال
-    # ═══════════════════════════════════════════════════
+    # ═══ الأقفال ═══
     elif data.startswith("lock_"):
-        if not admin:
-            await query.answer("⛔ للمشرفين فقط!", show_alert=True)
-            return
+        if not is_adm: return
         lock_type = data[5:]
         locked = db.get_all_locks(chat.id)
         if lock_type in locked:
@@ -1654,183 +1291,70 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             db.lock_type(chat.id, lock_type, user_id)
             action = "قفل"
-        lock_name = LOCK_TYPES.get(lock_type, lock_type)
         await query.message.edit_text(
-            f"🔒 <b>نظام الأقفال</b>\n\n"
-            f"تم {action} {lock_name} {'🔓' if action=='فتح' else '🔒'}\n\n"
-            f"اختر نوع الرسالة لقفله:",
+            f"🔒 تم {action} {LOCK_TYPES.get(lock_type, lock_type)}\n\nاختر نوع آخر:",
             parse_mode="HTML", reply_markup=kb_lock_types(chat.id)
         )
-        db.log_action(chat.id, user_id, f"{action}_{lock_type}")
-
     elif data == "act_lockall":
-        if not admin:
-            return
+        if not is_adm: return
         for key in LOCK_TYPES:
             db.lock_type(chat.id, key, user_id)
-        await query.message.edit_text(
-            "🔒 تم قفل جميع أنواع الرسائل ✅",
-            parse_mode="HTML", reply_markup=kb_lock_types(chat.id)
-        )
-        db.log_action(chat.id, user_id, "lockall")
-
+        await query.message.edit_text("🔒 تم قفل الكل ✅", parse_mode="HTML", reply_markup=kb_lock_types(chat.id))
     elif data == "act_unlockall":
-        if not admin:
-            return
-        count = db.unlock_all(chat.id)
-        await query.message.edit_text(
-            f"🔓 تم فتح جميع الأقفال ({count} قفل) ✅",
-            parse_mode="HTML", reply_markup=kb_lock_types(chat.id)
-        )
-        db.log_action(chat.id, user_id, "unlockall")
-
+        if not is_adm: return
+        db.unlock_all(chat.id)
+        await query.message.edit_text("🔓 تم فتح الكل ✅", parse_mode="HTML", reply_markup=kb_lock_types(chat.id))
     elif data == "act_showlocks":
         locked = db.get_all_locks(chat.id)
         if locked:
-            text = "🔒 <b>الأقفال المفعّلة:</b>\n\n"
-            for lt in locked:
-                text += f"• 🔒 {LOCK_TYPES.get(lt, lt)}\n"
+            text = "🔒 <b>الأقفال:</b>\n\n" + "\n".join([f"• 🔒 {LOCK_TYPES.get(lt, lt)}" for lt in locked])
         else:
-            text = "🔓 لا توجد أقفال مفعّلة."
+            text = "🔓 لا توجد أقفال."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_lock_types(chat.id))
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات الكلمات المسيئة
-    # ═══════════════════════════════════════════════════
+    # ═══ الكلمات المسيئة ═══
     elif data == "act_addbadword":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "addbadword"
-        await query.message.edit_text(
-            "➕ <b>إضافة كلمة مسيئة</b>\n\n"
-            "📝 اكتب الكلمة المراد حظرها:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("➕ اكتب الكلمة:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_delbadword":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "delbadword"
-        await query.message.edit_text(
-            "➖ <b>حذف كلمة مسيئة</b>\n\n"
-            "📝 اكتب الكلمة المراد إزالتها:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("➖ اكتب الكلمة:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_showbadwords":
         words = db.get_badwords(chat.id)
         if words:
-            text = "📋 <b>الكلمات المحظورة:</b>\n\n"
-            for w in words:
-                text += f"• 🚫 {w}\n"
+            text = "📋 <b>الكلمات المحظورة:</b>\n\n" + "\n".join([f"• 🚫 {w}" for w in words])
         else:
-            text = "📋 لا توجد كلمات محظورة."
+            text = "📋 لا توجد كلمات."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_badwords())
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات الإعدادات
-    # ═══════════════════════════════════════════════════
+    # ═══ الإعدادات ═══
     elif data == "act_setwelcome":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "setwelcome"
         await query.message.edit_text(
-            "💬 <b>تعيين رسالة الترحيب</b>\n\n"
-            "📝 اكتب رسالة الترحيب الجديدة:\n\n"
-            "💡 يمكنك استخدام <code>{user}</code> لاسم العضو\n\n"
-            "⏳ بانتظار كتابتك...",
+            "💬 اكتب رسالة الترحيب (استخدم {user} لاسم العضو):\n\n⏳ بانتظار كتابتك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
-
     elif data == "act_resetwelcome":
-        if not admin:
-            return
+        if not is_adm: return
         db.update_setting(chat.id, "welcome_msg", "")
-        await query.message.edit_text(
-            "🔄 تم إعادة الترحيب للقيمة الافتراضية ✅",
-            parse_mode="HTML", reply_markup=kb_settings(chat.id)
-        )
-
+        await query.message.edit_text("🔄 تم إعادة الترحيب ✅", parse_mode="HTML", reply_markup=kb_settings(chat.id))
     elif data == "act_setlog":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "setlog"
         await query.message.edit_text(
-            "📝 <b>تعيين قناة السجلات</b>\n\n"
-            "أرسل معرف القناة (مثال: <code>-1001234567890</code>)\n\n"
-            "⏳ بانتظار كتابتك...",
+            "📝 أرسل معرف القناة:\n\n⏳ بانتظار كتابتك...",
             parse_mode="HTML", reply_markup=kb_back_cancel()
         )
 
-    elif data == "act_cleanup":
-        if not admin:
-            return
-        context.user_data["waiting"] = "cleanup"
-        await query.message.edit_text(
-            "🗑️ <b>تنظيف المجموعة</b>\n\n"
-            "سيتم حذف الرسائل الأخيرة\n"
-            "اكتب عدد الرسائل المراد حذفها:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
-    elif data == "act_backup":
-        if not admin:
-            return
-        try:
-            settings = db.get_settings(chat.id)
-            notes = db.get_all_notes(chat.id)
-            filters_list = db.get_all_filters(chat.id)
-            badwords = db.get_badwords(chat.id)
-            locks = db.get_all_locks(chat.id)
-            backup_data = {
-                "chat_id": chat.id,
-                "settings": settings,
-                "notes_count": len(notes),
-                "filters_count": len(filters_list),
-                "badwords_count": len(badwords),
-                "locks_count": len(locks),
-                "backup_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "version": "5.0"
-            }
-            backup_text = json.dumps(backup_data, ensure_ascii=False, indent=2)
-            await query.message.edit_text(
-                f"💾 <b>النسخ الاحتياطي</b>\n\n"
-                f"<pre>{backup_text}</pre>\n\n"
-                f"تم حفظ النسخة بنجاح ✅",
-                parse_mode="HTML", reply_markup=kb_settings(chat.id)
-            )
-        except Exception as e:
-            await query.message.edit_text(
-                f"❌ خطأ في النسخ الاحتياطي: {str(e)}",
-                parse_mode="HTML", reply_markup=kb_settings(chat.id)
-            )
-
-    elif data == "act_restore":
-        await query.message.edit_text(
-            "📥 <b>استعادة النسخ الاحتياطي</b>\n\n"
-            "أرسل بيانات النسخة الاحتياطية (JSON)\n\n"
-            "⏳ بانتظار إرسال البيانات...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
-    # ═══════════════════════════════════════════════════
-    # إجراءات المعلومات
-    # ═══════════════════════════════════════════════════
+    # ═══ المعلومات ═══
     elif data == "act_userinfo":
         context.user_data["waiting"] = "userinfo"
-        await query.message.edit_text(
-            "👤 <b>معلومات مستخدم</b>\n\n"
-            "📌 رد على رسالة المستخدم لعرض معلوماته\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("👤 رد على رسالة المستخدم\n\n⏳ بانتظار ردك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_groupstats":
         stats = db.get_stats(chat.id)
-        s = db.get_settings(chat.id)
         if stats:
             text = (
                 f"📊 <b>إحصائيات المجموعة</b>\n\n"
@@ -1844,34 +1368,29 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🗑️ المحذوفات: {stats.get('total_deleted', 0)}\n"
                 f"🛡️ غارات محظورة: {stats.get('total_raids_blocked', 0)}\n"
                 f"🔗 روابط محظورة: {stats.get('total_links_blocked', 0)}\n"
-                f"📨 سبام محظور: {stats.get('total_spam_blocked', 0)}\n"
-                f"🌊 فلود محظور: {stats.get('total_flood_blocked', 0)}\n"
             )
         else:
             text = "📊 لا توجد إحصائيات بعد."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_back())
-
     elif data == "act_admins":
         try:
             admins = await chat.get_administrators()
-            text = "👥 <b>مشرفي المجموعة:</b>\n\n"
+            text = "👥 <b>المشرفين:</b>\n\n"
             for a in admins:
                 status = "👑" if a.status == ChatMemberStatus.OWNER else "🛡️"
                 text += f"{status} {mention(a.user.id, a.user.first_name)}\n"
         except:
-            text = "❌ لا يمكن جلب قائمة المشرفين."
+            text = "❌ لا يمكن جلب المشرفين."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_back())
-
     elif data == "act_log":
         logs = db.get_action_log(chat.id, 10)
         if logs:
-            text = "📋 <b>سجل الإجراءات (آخر 10):</b>\n\n"
-            for log in logs:
-                text += f"• {log['action']} - <code>{log['created_at']}</code>\n"
+            text = "📋 <b>آخر 10 إجراءات:</b>\n\n"
+            for log_entry in logs:
+                text += f"• {log_entry['action']} - <code>{log_entry['created_at']}</code>\n"
         else:
-            text = "📋 لا توجد إجراءات مسجلة."
+            text = "📋 لا توجد إجراءات."
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_back())
-
     elif data == "act_protect_status":
         s = db.get_settings(chat.id)
         protections = [
@@ -1883,93 +1402,45 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ("حماية السبام", s.get('anti_spam', 1)),
             ("منع الروابط", s.get('anti_link', 1)),
             ("فلتر الكلمات", s.get('anti_badword', 1)),
-            ("منع المعرفات", s.get('anti_username', 0)),
-            ("منع الإيموجي", s.get('anti_emoji', 0)),
             ("كابتشا الدخول", s.get('captcha_enabled', 0)),
-            ("منع العربية", s.get('anti_arabic', 0)),
         ]
         text = "🛡️ <b>حالة الحماية:</b>\n\n"
         for name, status in protections:
             text += f"{'✅' if status else '❌'} {name}\n"
-        active = sum(1 for _, s in protections if s)
-        text += f"\n📊 <b>{active}/{len(protections)}</b> حماية مفعّلة"
+        active = sum(1 for _, s_val in protections if s_val)
+        text += f"\n📊 {active}/{len(protections)} مفعّلة"
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=kb_back())
 
-    # ═══════════════════════════════════════════════════
-    # إجراءات أخرى
-    # ═══════════════════════════════════════════════════
+    # ═══ أخرى ═══
     elif data == "act_announce":
-        if not admin:
-            return
+        if not is_adm: return
         context.user_data["waiting"] = "announce"
-        await query.message.edit_text(
-            "📢 <b>إعلان</b>\n\n"
-            "📝 اكتب نص الإعلان:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("📢 اكتب نص الإعلان:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "act_report":
         context.user_data["waiting"] = "report"
-        await query.message.edit_text(
-            "🚨 <b>بلاغ</b>\n\n"
-            "📌 رد على رسالة المستخدم المراد الإبلاغ عنه\n"
-            "واكتب السبب\n\n"
-            "⏳ بانتظار ردك على رسالة المستخدم...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
+        await query.message.edit_text("🚨 رد على رسالة المستخدم + اكتب السبب\n\n⏳ بانتظار ردك...", parse_mode="HTML", reply_markup=kb_back_cancel())
 
-    # ═══════════════════════════════════════════════════
-    # أدوات المالك
-    # ═══════════════════════════════════════════════════
+    # ═══ أدوات المالك ═══
     elif data == "owner_broadcast":
-        if not is_owner:
-            await query.answer("👑 للمالك فقط!", show_alert=True)
-            return
+        if not is_owner: return
         context.user_data["waiting"] = "owner_broadcast"
-        await query.message.edit_text(
-            "📢 <b>إعلان لكل المجموعات</b>\n\n"
-            "📝 اكتب نص الإعلان الذي سيُرسل لكل المجموعات:\n\n"
-            "⏳ بانتظار كتابتك...",
-            parse_mode="HTML", reply_markup=kb_back_cancel()
-        )
-
+        await query.message.edit_text("📢 اكتب الإعلان لكل المجموعات:\n\n⏳ بانتظار كتابتك...", parse_mode="HTML", reply_markup=kb_back_cancel())
     elif data == "owner_stats":
-        if not is_owner:
-            return
-        conn = db._get_conn()
-        c = conn.cursor()
-        c.execute("SELECT COUNT(*) FROM group_settings")
-        total_groups = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM warnings")
-        total_warns = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM notes")
-        total_notes = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM filters")
-        total_filters = c.fetchone()[0]
-        c.execute("SELECT COUNT(*) FROM badwords")
-        total_badwords = c.fetchone()[0]
-        conn.close()
+        if not is_owner: return
+        group_ids = db.get_all_group_ids()
         await query.message.edit_text(
-            f"📊 <b>إحصائيات البوت العامة</b>\n\n"
-            f"👥 المجموعات: {total_groups}\n"
-            f"⚠️ التحذيرات: {total_warns}\n"
-            f"📝 الملاحظات: {total_notes}\n"
-            f"🔍 الفلاتر: {total_filters}\n"
-            f"🔤 الكلمات المحظورة: {total_badwords}",
+            f"📊 <b>إحصائيات البوت</b>\n\n👥 المجموعات: {len(group_ids)}",
             parse_mode="HTML", reply_markup=kb_owner()
         )
 
 
 # ═════════════════════════════════════════════════════════════════
-# معالجة الرسائل النصية (للإجراءات التي تحتاج إدخال)
+# معالجة الرسائل النصية
 # ═════════════════════════════════════════════════════════════════
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة الرسائل النصية للأوامر القائمة على الرد"""
-    if not update.message:
-        return
-    if not update.effective_chat:
+    """معالجة الرسائل النصية"""
+    if not update.message or not update.effective_chat:
         return
 
     chat = update.effective_chat
@@ -1978,138 +1449,92 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = msg.text or ""
     waiting = context.user_data.get("waiting")
 
-    # ═══════════════════════════════════════════════════
-    # معالجة الإجراءات المعلقة
-    # ═══════════════════════════════════════════════════
+    # ═══ معالجة الإجراءات المعلقة ═══
     if waiting:
-        admin = await is_admin(update)
+        is_adm = await check_is_admin(chat, user.id) or user.id == OWNER_ID
         target = msg.reply_to_message.from_user if msg.reply_to_message else None
         target_id = target.id if target else None
 
-        # ─── حظر ───
         if waiting == "ban" and target_id:
-            if not admin:
+            if not is_adm:
                 await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+                context.user_data.pop("waiting", None); return
             reason = text if text != "." else "بدون سبب"
             try:
                 await chat.ban_member(target_id)
-                await msg.reply_text(
-                    f"🚫 تم حظر {mention(target_id, target.first_name)}\n📋 السبب: {reason}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"🚫 تم حظر {mention(target_id, target.first_name)}\n📋 السبب: {reason}", parse_mode="HTML")
                 db.increment_stat(chat.id, "total_bans")
                 db.log_action(chat.id, user.id, "ban", target_id, reason)
-                await send_log(chat.id, f"🚫 حظر: {mention(user.id, user.first_name)} حظر {mention(target_id, target.first_name)} - {reason}", context)
+                await send_log(chat.id, f"🚫 حظر: {mention(user.id, user.first_name)} حظر {mention(target_id, target.first_name)}", context)
             except Exception as e:
                 await msg.reply_text(f"❌ خطأ: {str(e)}")
             context.user_data.pop("waiting", None)
 
-        # ─── إلغاء حظر ───
         elif waiting == "unban" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             try:
                 await chat.unban_member(target_id)
-                await msg.reply_text(
-                    f"✅ تم إلغاء حظر {mention(target_id, target.first_name)}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"✅ تم إلغاء حظر {mention(target_id, target.first_name)}", parse_mode="HTML")
                 db.log_action(chat.id, user.id, "unban", target_id)
             except Exception as e:
                 await msg.reply_text(f"❌ خطأ: {str(e)}")
             context.user_data.pop("waiting", None)
 
-        # ─── كتم ───
         elif waiting == "mute" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             try:
                 perms = ChatPermissions(can_send_messages=False)
                 await chat.restrict_member(target_id, perms)
-                await msg.reply_text(
-                    f"🔇 تم كتم {mention(target_id, target.first_name)}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"🔇 تم كتم {mention(target_id, target.first_name)}", parse_mode="HTML")
                 db.increment_stat(chat.id, "total_mutes")
                 db.log_action(chat.id, user.id, "mute", target_id)
-                await send_log(chat.id, f"🔇 كتم: {mention(user.id, user.first_name)} كتم {mention(target_id, target.first_name)}", context)
             except Exception as e:
                 await msg.reply_text(f"❌ خطأ: {str(e)}")
             context.user_data.pop("waiting", None)
 
-        # ─── إلغاء كتم ───
         elif waiting == "unmute" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             try:
-                perms = ChatPermissions(
-                    can_send_messages=True, can_send_media_messages=True,
-                    can_send_other_messages=True, can_add_web_page_previews=True
-                )
+                perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                                       can_send_other_messages=True, can_add_web_page_previews=True)
                 await chat.restrict_member(target_id, perms)
-                await msg.reply_text(
-                    f"🔊 تم إلغاء كتم {mention(target_id, target.first_name)}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"🔊 تم إلغاء كتم {mention(target_id, target.first_name)}", parse_mode="HTML")
                 db.log_action(chat.id, user.id, "unmute", target_id)
             except Exception as e:
                 await msg.reply_text(f"❌ خطأ: {str(e)}")
             context.user_data.pop("waiting", None)
 
-        # ─── كتم مؤقت - اختيار المستخدم ───
         elif waiting == "tmute_select" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             context.user_data["target_id"] = target_id
             context.user_data["waiting"] = "tmute_time"
-            await msg.reply_text(
-                f"⏱️ <b>اختر مدة كتم {mention(target_id, target.first_name)}</b>",
-                parse_mode="HTML",
-                reply_markup=kb_mute_time(target_id)
-            )
+            await msg.reply_text(f"⏱️ اختر مدة كتم {mention(target_id, target.first_name)}", parse_mode="HTML",
+                                reply_markup=kb_mute_time(target_id))
 
-        # ─── طرد ───
         elif waiting == "kick" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             reason = text if text != "." else "بدون سبب"
             try:
                 await chat.ban_member(target_id)
                 await chat.unban_member(target_id)
-                await msg.reply_text(
-                    f"👢 تم طرد {mention(target_id, target.first_name)}\n📋 السبب: {reason}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"👢 تم طرد {mention(target_id, target.first_name)}\n📋 السبب: {reason}", parse_mode="HTML")
                 db.increment_stat(chat.id, "total_kicks")
                 db.log_action(chat.id, user.id, "kick", target_id, reason)
-                await send_log(chat.id, f"👢 طرد: {mention(user.id, user.first_name)} طرد {mention(target_id, target.first_name)} - {reason}", context)
             except Exception as e:
                 await msg.reply_text(f"❌ خطأ: {str(e)}")
             context.user_data.pop("waiting", None)
 
-        # ─── تحذير ───
         elif waiting == "warn" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             reason = text if text != "." else "بدون سبب"
             count = db.add_warning(chat.id, target_id, reason, user.id)
             db.increment_stat(chat.id, "total_warns")
-            remaining = WARN_LIMIT - count
-
             if count >= WARN_LIMIT:
                 settings = db.get_settings(chat.id)
                 warn_action = settings.get("warn_action", "mute")
@@ -2121,340 +1546,272 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await chat.ban_member(target_id)
                         await chat.unban_member(target_id)
                         action_text = "طرد 👢"
-                    else:  # mute
+                    else:
                         perms = ChatPermissions(can_send_messages=False)
                         await chat.restrict_member(target_id, perms)
                         action_text = "كتم 🔇"
-                    await msg.reply_text(
-                        f"⚠️ بلغ المستخدم حد التحذيرات ({WARN_LIMIT})!\n"
-                        f"تم اتخاذ الإجراء: {action_text}",
-                        parse_mode="HTML"
-                    )
+                    await msg.reply_text(f"⚠️ بلغ الحد ({WARN_LIMIT})! تم {action_text}", parse_mode="HTML")
                     db.reset_warnings(chat.id, target_id)
                 except Exception as e:
-                    await msg.reply_text(f"❌ خطأ في تنفيذ العقاب: {str(e)}")
+                    await msg.reply_text(f"❌ خطأ: {str(e)}")
             else:
-                await msg.reply_text(
-                    f"⚠️ تم تحذير {mention(target_id, target.first_name)} [{count}/{WARN_LIMIT}]\n📋 السبب: {reason}",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"⚠️ تحذير [{count}/{WARN_LIMIT}] لـ {mention(target_id, target.first_name)}\n📋 {reason}", parse_mode="HTML")
             db.log_action(chat.id, user.id, "warn", target_id, reason)
             context.user_data.pop("waiting", None)
 
-        # ─── إزالة تحذيرات ───
         elif waiting == "unwarn" and target_id:
-            if not admin:
-                await msg.reply_text("⛔ للمشرفين فقط!")
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             db.reset_warnings(chat.id, target_id)
-            await msg.reply_text(
-                f"✅ تم إزالة جميع تحذيرات {mention(target_id, target.first_name)}",
-                parse_mode="HTML"
-            )
-            db.log_action(chat.id, user.id, "unwarn", target_id)
+            await msg.reply_text(f"✅ تم إزالة تحذيرات {mention(target_id, target.first_name)}", parse_mode="HTML")
             context.user_data.pop("waiting", None)
 
-        # ─── حذف رسالة ───
         elif waiting == "del":
-            if not admin:
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             if msg.reply_to_message:
                 try:
                     await msg.reply_to_message.delete()
                     await msg.delete()
                     db.increment_stat(chat.id, "total_deleted")
-                    db.log_action(chat.id, user.id, "delete_msg")
                 except:
                     pass
             context.user_data.pop("waiting", None)
 
-        # ─── حذف متعدد ───
         elif waiting == "purge":
-            if not admin:
-                context.user_data.pop("waiting", None)
-                return
-            if msg.reply_to_message:
-                try:
-                    count = int(text) if text.isdigit() else 1
-                    count = min(count, 100)
-                    msg_id = msg.reply_to_message.message_id
-                    deleted = 0
-                    for i in range(count):
-                        try:
-                            await context.bot.delete_message(chat.id, msg_id + i)
-                            deleted += 1
-                        except:
-                            pass
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if msg.reply_to_message and text.isdigit():
+                count = min(int(text), 100)
+                msg_id = msg.reply_to_message.message_id
+                deleted = 0
+                for i in range(count):
                     try:
-                        await msg.delete()
+                        await context.bot.delete_message(chat.id, msg_id + i)
+                        deleted += 1
                     except:
                         pass
-                    db.increment_stat(chat.id, "total_deleted")
-                    db.log_action(chat.id, user.id, f"purge_{deleted}")
-                    await chat.send_message(f"🗑️ تم حذف {deleted} رسالة ✅")
-                except Exception as e:
-                    await msg.reply_text(f"❌ خطأ: {str(e)}")
+                try:
+                    await msg.delete()
+                except:
+                    pass
+                db.increment_stat(chat.id, "total_deleted")
+                await chat.send_message(f"🗑️ تم حذف {deleted} رسالة ✅")
             context.user_data.pop("waiting", None)
 
-        # ─── تثبيت ───
         elif waiting == "pin":
-            if not admin:
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             if msg.reply_to_message:
                 try:
                     await msg.reply_to_message.pin()
-                    db.log_action(chat.id, user.id, "pin")
                 except:
                     pass
             context.user_data.pop("waiting", None)
 
-        # ─── تعيين القوانين ───
         elif waiting == "setrules":
-            if not admin:
-                context.user_data.pop("waiting", None)
-                return
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
             db.update_setting(chat.id, "rules", text)
             await msg.reply_text("📋 تم تعيين القوانين ✅")
-            db.log_action(chat.id, user.id, "set_rules")
             context.user_data.pop("waiting", None)
 
-        # ─── حفظ ملاحظة ───
         elif waiting == "savenote_name":
             context.user_data["note_name"] = text.strip()
             context.user_data["waiting"] = "savenote_content"
-            await msg.reply_text(
-                "📝 الآن اكتب محتوى الملاحظة:",
-                parse_mode="HTML"
-            )
+            await msg.reply_text("📝 الآن اكتب محتوى الملاحظة:")
 
         elif waiting == "savenote_content":
             note_name = context.user_data.get("note_name", "")
             if note_name:
                 db.save_note(chat.id, note_name, text, user.id)
-                await msg.reply_text(f"📝 تم حفظ الملاحظة <b>{note_name}</b> ✅", parse_mode="HTML")
+                await msg.reply_text(f"📝 تم حفظ <b>{note_name}</b> ✅", parse_mode="HTML")
             context.user_data.pop("waiting", None)
             context.user_data.pop("note_name", None)
 
-        # ─── حذف ملاحظة ───
         elif waiting == "delnote":
             if db.delete_note(chat.id, text.strip()):
-                await msg.reply_text(f"🗑️ تم حذف الملاحظة <b>{text.strip()}</b> ✅", parse_mode="HTML")
+                await msg.reply_text(f"🗑️ تم حذف <b>{text.strip()}</b> ✅", parse_mode="HTML")
             else:
-                await msg.reply_text("❌ الملاحظة غير موجودة")
+                await msg.reply_text("❌ غير موجودة")
             context.user_data.pop("waiting", None)
 
-        # ─── إضافة فلتر ───
         elif waiting == "addfilter_kw":
             context.user_data["filter_kw"] = text.strip()
             context.user_data["waiting"] = "addfilter_reply"
-            await msg.reply_text("🔍 الآن اكتب الرد التلقائي لهذه الكلمة:")
+            await msg.reply_text("🔍 الآن اكتب الرد التلقائي:")
 
         elif waiting == "addfilter_reply":
             kw = context.user_data.get("filter_kw", "")
             if kw:
                 db.save_filter(chat.id, kw, text, user.id)
-                await msg.reply_text(f"🔍 تم حفظ الفلتر <b>{kw}</b> ✅", parse_mode="HTML")
+                await msg.reply_text(f"🔍 تم حفظ فلتر <b>{kw}</b> ✅", parse_mode="HTML")
             context.user_data.pop("waiting", None)
             context.user_data.pop("filter_kw", None)
 
-        # ─── حذف فلتر ───
         elif waiting == "delfilter":
             if db.delete_filter(chat.id, text.strip()):
-                await msg.reply_text(f"🗑️ تم حذف الفلتر <b>{text.strip()}</b> ✅", parse_mode="HTML")
+                await msg.reply_text(f"🗑️ تم حذف فلتر <b>{text.strip()}</b> ✅", parse_mode="HTML")
             else:
-                await msg.reply_text("❌ الفلتر غير موجود")
+                await msg.reply_text("❌ غير موجود")
             context.user_data.pop("waiting", None)
 
-        # ─── إضافة كلمة مسيئة ───
         elif waiting == "addbadword":
-            if admin:
+            if is_adm:
                 db.add_badword(chat.id, text.strip().lower(), user.id)
-                await msg.reply_text(f"🚫 تم إضافة الكلمة <b>{text.strip()}</b> ✅", parse_mode="HTML")
+                await msg.reply_text(f"🚫 تم إضافة <b>{text.strip()}</b> ✅", parse_mode="HTML")
             context.user_data.pop("waiting", None)
 
-        # ─── حذف كلمة مسيئة ───
         elif waiting == "delbadword":
-            if admin:
+            if is_adm:
                 if db.remove_badword(chat.id, text.strip().lower()):
-                    await msg.reply_text(f"✅ تم إزالة الكلمة <b>{text.strip()}</b>", parse_mode="HTML")
+                    await msg.reply_text(f"✅ تم إزالة <b>{text.strip()}</b>", parse_mode="HTML")
                 else:
-                    await msg.reply_text("❌ الكلمة غير موجودة")
+                    await msg.reply_text("❌ غير موجودة")
             context.user_data.pop("waiting", None)
 
-        # ─── تعيين الترحيب ───
         elif waiting == "setwelcome":
-            if admin:
+            if is_adm:
                 db.update_setting(chat.id, "welcome_msg", text)
-                await msg.reply_text("💬 تم تعيين رسالة الترحيب ✅")
+                await msg.reply_text("💬 تم تعيين الترحيب ✅")
             context.user_data.pop("waiting", None)
 
-        # ─── تعيين قناة السجلات ───
         elif waiting == "setlog":
-            if admin:
+            if is_adm:
                 try:
                     log_id = int(text.strip())
                     db.update_setting(chat.id, "log_channel_id", log_id)
                     await msg.reply_text(f"📝 تم تعيين قناة السجلات: <code>{log_id}</code> ✅", parse_mode="HTML")
                 except ValueError:
-                    await msg.reply_text("❌ معرف غير صحيح. أرسل رقم القناة فقط.")
+                    await msg.reply_text("❌ أرسل رقم القناة فقط.")
             context.user_data.pop("waiting", None)
 
-        # ─── تنظيف المجموعة ───
-        elif waiting == "cleanup":
-            if admin:
-                try:
-                    count = int(text.strip())
-                    count = min(count, 100)
-                    deleted = 0
-                    recent_msgs = await context.bot.get_chat(chat.id)
-                    # Simple cleanup - delete recent messages
-                    await msg.reply_text(f"🗑️ جاري حذف آخر {count} رسالة...")
-                    # We can't easily get message IDs, so just confirm
-                    db.increment_stat(chat.id, "total_deleted")
-                    await msg.reply_text(f"🗑️ تم طلب حذف {count} رسالة ✅")
-                except ValueError:
-                    await msg.reply_text("❌ أرسل رقماً فقط.")
-            context.user_data.pop("waiting", None)
-
-        # ─── إعلان ───
         elif waiting == "announce":
-            if admin:
-                await msg.reply_text(
-                    f"📢 <b>إعلان:</b>\n\n{text}",
-                    parse_mode="HTML"
-                )
-                db.log_action(chat.id, user.id, "announce")
+            if is_adm:
+                await msg.reply_text(f"📢 <b>إعلان:</b>\n\n{text}", parse_mode="HTML")
             context.user_data.pop("waiting", None)
 
-        # ─── بلاغ ───
         elif waiting == "report":
             settings = db.get_settings(chat.id)
-            if settings.get('report_enabled', 1):
-                if target_id:
-                    reason = text if text != "." else "بدون سبب"
-                    admins_list = await chat.get_administrators()
-                    admin_mentions = " ".join([mention(a.user.id, a.user.first_name) for a in admins_list[:5]])
+            if settings.get('report_enabled', 1) and target_id:
+                reason = text if text != "." else "بدون سبب"
+                try:
+                    admins = await chat.get_administrators()
+                    admin_mentions = " ".join([mention(a.user.id, a.user.first_name) for a in admins[:5]])
                     await msg.reply_text(
-                        f"🚨 <b>بلاغ!</b>\n\n"
-                        f"👤 المبلغ: {mention(user.id, user.first_name)}\n"
-                        f"🎯 المبلغ عنه: {mention(target_id, target.first_name)}\n"
-                        f"📋 السبب: {reason}\n\n"
-                        f"👥 المشرفين: {admin_mentions}",
+                        f"🚨 <b>بلاغ!</b>\n\n👤 {mention(user.id, user.first_name)}\n🎯 {mention(target_id, target.first_name)}\n📋 {reason}\n\n👥 {admin_mentions}",
                         parse_mode="HTML"
                     )
-                else:
-                    await msg.reply_text("📌 يجب الرد على رسالة المستخدم للإبلاغ عنه.")
-            else:
-                await msg.reply_text("❌ نظام البلاغات معطّل.")
+                except:
+                    pass
             context.user_data.pop("waiting", None)
 
-        # ─── معلومات مستخدم ───
         elif waiting == "userinfo":
             if target_id:
-                member = await chat.get_member(target_id)
-                status_map = {
-                    ChatMemberStatus.OWNER: "👑 المالك",
-                    ChatMemberStatus.ADMINISTRATOR: "🛡️ مشرف",
-                    ChatMemberStatus.MEMBER: "👤 عضو",
-                    ChatMemberStatus.RESTRICTED: "🔒 مقيّد",
-                    ChatMemberStatus.LEFT: "📤 غادر",
-                    ChatMemberStatus.BANNED: "🚫 محظور",
-                }
-                status = status_map.get(member.status, "❓ غير معروف")
-                warn_count = db.get_warning_count(chat.id, target_id)
-                is_wl = db.is_whitelisted(chat.id, target_id)
-                info_text = (
-                    f"👤 <b>معلومات المستخدم</b>\n\n"
-                    f"📝 الاسم: {target.first_name}\n"
-                    f"🆔 المعرف: <code>{target_id}</code>\n"
-                    f"📌 الحالة: {status}\n"
-                    f"⚠️ التحذيرات: {warn_count}/{WARN_LIMIT}\n"
-                    f"🛡️ القائمة البيضاء: {'نعم ✅' if is_wl else 'لا ❌'}\n"
-                )
-                if target.username:
-                    info_text += f"🌐 المعرف: @{target.username}\n"
-                await msg.reply_text(info_text, parse_mode="HTML")
+                try:
+                    member = await chat.get_member(target_id)
+                    status_map = {
+                        ChatMemberStatus.OWNER: "👑 المالك", ChatMemberStatus.ADMINISTRATOR: "🛡️ مشرف",
+                        ChatMemberStatus.MEMBER: "👤 عضو", ChatMemberStatus.RESTRICTED: "🔒 مقيّد",
+                        ChatMemberStatus.LEFT: "📤 غادر", ChatMemberStatus.BANNED: "🚫 محظور",
+                    }
+                    status = status_map.get(member.status, "❓")
+                    warn_count = db.get_warning_count(chat.id, target_id)
+                    is_wl = db.is_whitelisted(chat.id, target_id)
+                    info = (f"👤 <b>معلومات المستخدم</b>\n\n📝 الاسم: {target.first_name}\n"
+                           f"🆔 المعرف: <code>{target_id}</code>\n📌 الحالة: {status}\n"
+                           f"⚠️ التحذيرات: {warn_count}/{WARN_LIMIT}\n🛡️ القائمة البيضاء: {'نعم ✅' if is_wl else 'لا ❌'}\n")
+                    if target.username:
+                        info += f"🌐 المعرف: @{target.username}\n"
+                    await msg.reply_text(info, parse_mode="HTML")
+                except Exception as e:
+                    await msg.reply_text(f"❌ خطأ: {str(e)}")
             else:
                 await msg.reply_text("📌 يجب الرد على رسالة المستخدم.")
             context.user_data.pop("waiting", None)
 
-        # ─── إضافة للقائمة البيضاء ───
         elif waiting == "wl_add":
-            if admin and target_id:
+            if is_adm and target_id:
                 db.add_whitelist(chat.id, target_id, user.id)
-                await msg.reply_text(
-                    f"🛡️ تم إضافة {mention(target_id, target.first_name)} للقائمة البيضاء ✅",
-                    parse_mode="HTML"
-                )
+                await msg.reply_text(f"🛡️ تم إضافة {mention(target_id, target.first_name)} للقائمة البيضاء ✅", parse_mode="HTML")
             context.user_data.pop("waiting", None)
 
-        # ─── إزالة من القائمة البيضاء ───
         elif waiting == "wl_remove":
-            if admin and target_id:
+            if is_adm and target_id:
                 if db.remove_whitelist(chat.id, target_id):
-                    await msg.reply_text(
-                        f"🛡️ تم إزالة {mention(target_id, target.first_name)} من القائمة البيضاء ✅",
-                        parse_mode="HTML"
-                    )
+                    await msg.reply_text(f"🛡️ تم إزالة {mention(target_id, target.first_name)} من القائمة البيضاء ✅", parse_mode="HTML")
                 else:
-                    await msg.reply_text("❌ المستخدم ليس في القائمة البيضاء")
+                    await msg.reply_text("❌ ليس في القائمة البيضاء")
             context.user_data.pop("waiting", None)
 
-        # ─── حد الغارة ───
         elif waiting == "set_raid_threshold":
-            if admin:
+            if is_adm:
                 try:
                     threshold = max(2, min(int(text.strip()), 50))
                     db.update_setting(chat.id, "raid_threshold", threshold)
-                    await msg.reply_text(f"⚡ تم تعيين حد الغارة: {threshold} ✅")
+                    await msg.reply_text(f"⚡ حد الغارة: {threshold} ✅")
                 except ValueError:
                     await msg.reply_text("❌ أرسل رقماً فقط.")
             context.user_data.pop("waiting", None)
 
-        # ─── إعلان المالك ───
         elif waiting == "owner_broadcast":
             if user.id == OWNER_ID:
-                # Send to all groups
-                conn = db._get_conn()
-                c = conn.cursor()
-                c.execute("SELECT chat_id FROM group_settings")
-                groups = c.fetchall()
-                conn.close()
+                group_ids = db.get_all_group_ids()
                 sent = 0
-                for g in groups:
+                for gid in group_ids:
                     try:
-                        await context.bot.send_message(
-                            chat_id=g[0],
-                            text=f"📢 <b>إعلان من المالك:</b>\n\n{text}",
-                            parse_mode="HTML"
-                        )
+                        await context.bot.send_message(chat_id=gid, text=f"📢 <b>إعلان من المالك:</b>\n\n{text}", parse_mode="HTML")
                         sent += 1
                     except:
                         pass
-                await msg.reply_text(f"📢 تم إرسال الإعلان إلى {sent} مجموعة ✅")
+                await msg.reply_text(f"📢 تم الإرسال إلى {sent} مجموعة ✅")
             context.user_data.pop("waiting", None)
 
         return
 
-    # ═══════════════════════════════════════════════════
-    # أنظمة الحماية التلقائية
-    # ═══════════════════════════════════════════════════
+    # ═══ أنظمة الحماية التلقائية ═══
     settings = db.get_settings(chat.id)
-    is_adm = await is_admin(update)
+    is_adm = await check_is_admin(chat, user.id) or user.id == OWNER_ID
     is_wl = db.is_whitelisted(chat.id, user.id)
 
-    if is_adm or is_wl or user.id == OWNER_ID:
-        # المشرفون والقائمة البيضاء معفون من الحماية
+    if is_adm or is_wl:
+        # المشرفون والقائمة البيضاء معفون
+        # لكن نطبق الفلاتر عليهم
+        filters_list = db.get_all_filters(chat.id)
+        text_lower = text.lower()
+        for kw in filters_list:
+            if kw.lower() in text_lower:
+                reply_text = db.get_filter(chat.id, kw)
+                if reply_text:
+                    await msg.reply_text(reply_text)
+                break
+        db.increment_stat(chat.id, "total_messages")
+        return
+
+    # ─── منع القنوات ───
+    if settings.get('anti_channel', 1) and msg.sender_chat:
+        try:
+            await msg.delete()
+            db.increment_stat(chat.id, "total_deleted")
+        except:
+            pass
+        return
+
+    # ─── منع التوجيه ───
+    if settings.get('anti_forward', 0) and msg.forward_date:
+        try:
+            await msg.delete()
+            db.increment_stat(chat.id, "total_deleted")
+        except:
+            pass
         return
 
     # ─── وضع الصيانة ───
     if settings.get('maintenance_mode', 0):
         try:
             await msg.delete()
-            await chat.restrict_member(user.id, ChatPermissions(can_send_messages=False))
+            perms = ChatPermissions(can_send_messages=False)
+            await chat.restrict_member(user.id, perms)
             db.increment_stat(chat.id, "total_mutes")
         except:
             pass
@@ -2469,19 +1826,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if link_action == 'mute':
                 await chat.restrict_member(user.id, ChatPermissions(can_send_messages=False))
                 db.increment_stat(chat.id, "total_mutes")
-                await chat.send_message(f"🔇 تم كتم {mention(user.id, user.first_name)} لإرسال رابط", parse_mode="HTML")
+                await chat.send_message(f"🔇 كتم {mention(user.id, user.first_name)} لإرسال رابط", parse_mode="HTML")
             elif link_action == 'ban':
                 await chat.ban_member(user.id)
                 db.increment_stat(chat.id, "total_bans")
-                await chat.send_message(f"🚫 تم حظر {mention(user.id, user.first_name)} لإرسال رابط", parse_mode="HTML")
+                await chat.send_message(f"🚫 حظر {mention(user.id, user.first_name)} لإرسال رابط", parse_mode="HTML")
             elif link_action == 'warn':
                 count = db.add_warning(chat.id, user.id, "إرسال رابط", 0)
                 if count >= WARN_LIMIT:
                     await chat.restrict_member(user.id, ChatPermissions(can_send_messages=False))
                     db.reset_warnings(chat.id, user.id)
-                    await chat.send_message(f"⚠️🔇 تم كتم {mention(user.id, user.first_name)} لتكرار إرسال الروابط", parse_mode="HTML")
                 else:
-                    await chat.send_message(f"⚠️ تحذير [{count}/{WARN_LIMIT}]: لا ترسل روابط! {mention(user.id, user.first_name)}", parse_mode="HTML")
+                    await chat.send_message(f"⚠️ [{count}/{WARN_LIMIT}]: لا ترسل روابط!", parse_mode="HTML")
             else:
                 db.increment_stat(chat.id, "total_deleted")
         except:
@@ -2494,7 +1850,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.delete()
             db.increment_stat(chat.id, "total_spam_blocked")
             db.increment_stat(chat.id, "total_deleted")
-            await chat.send_message(f"🚫 تم حذف رسالة سبام من {mention(user.id, user.first_name)}", parse_mode="HTML")
         except:
             pass
         return
@@ -2507,16 +1862,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await msg.delete()
                 db.increment_stat(chat.id, "total_flood_blocked")
-                db.increment_stat(chat.id, "total_deleted")
                 await chat.restrict_member(user.id, ChatPermissions(can_send_messages=False))
                 db.increment_stat(chat.id, "total_mutes")
-                await chat.send_message(f"🌊 تم كتم {mention(user.id, user.first_name)} للفلود", parse_mode="HTML")
-                await send_log(chat.id, f"🌊 فلود: تم كتم {mention(user.id, user.first_name)}", context)
+                await chat.send_message(f"🌊 كتم {mention(user.id, user.first_name)} للفلود", parse_mode="HTML")
             except:
                 pass
             return
 
-    # ─── فلتر الكلمات المسيئة ───
+    # ─── فلتر الكلمات ───
     if settings.get('anti_badword', 1):
         badwords = db.get_badwords(chat.id)
         text_lower = text.lower()
@@ -2525,24 +1878,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 try:
                     await msg.delete()
                     db.increment_stat(chat.id, "total_deleted")
-                    await chat.send_message(f"🚫 تم حذف رسالة تحتوي كلمة محظورة من {mention(user.id, user.first_name)}", parse_mode="HTML")
                 except:
                     pass
                 return
 
     # ─── منع المعرفات ───
-    if settings.get('anti_username', 0):
-        if re.search(r'@\w+', text):
-            try:
-                await msg.delete()
-                db.increment_stat(chat.id, "total_deleted")
-            except:
-                pass
-            return
+    if settings.get('anti_username', 0) and re.search(r'@\w+', text):
+        try:
+            await msg.delete()
+            db.increment_stat(chat.id, "total_deleted")
+        except:
+            pass
+        return
 
-    # ─── منع الإيموجي المفرط ───
+    # ─── منع الإيموجي ───
     if settings.get('anti_emoji', 0):
-        emoji_count = len(re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF]', text))
+        emoji_count = len(re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001F900-\U0001F9FF]', text))
         if emoji_count > 5:
             try:
                 await msg.delete()
@@ -2552,14 +1903,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     # ─── منع العربية ───
-    if settings.get('anti_arabic', 0):
-        if re.search(r'[\u0600-\u06FF]', text):
-            try:
-                await msg.delete()
-                db.increment_stat(chat.id, "total_deleted")
-            except:
-                pass
-            return
+    if settings.get('anti_arabic', 0) and re.search(r'[\u0600-\u06FF]', text):
+        try:
+            await msg.delete()
+            db.increment_stat(chat.id, "total_deleted")
+        except:
+            pass
+        return
 
     # ─── الفلاتر ───
     filters_list = db.get_all_filters(chat.id)
@@ -2571,16 +1921,14 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text(reply_text)
             break
 
-    # تحديث الإحصائيات
     db.increment_stat(chat.id, "total_messages")
 
 
 # ═════════════════════════════════════════════════════════════════
-# معالجة الأعضاء الجدد (حماية الغارات + كابتشا + ترحيب)
+# معالجة الأعضاء الجدد
 # ═════════════════════════════════════════════════════════════════
 
 async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة انضمام أعضاء جدد"""
     chat = update.effective_chat
     if not chat:
         return
@@ -2588,29 +1936,25 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     new_members = update.message.new_chat_members
 
     for member in new_members:
-        # تجاهل البوتات
         if member.is_bot:
             if settings.get('anti_bot', 0):
                 try:
                     await chat.ban_member(member.id)
-                    await chat.send_message(f"🤖 تم حظر بوت: {mention(member.id, member.first_name)}", parse_mode="HTML")
+                    await chat.send_message(f"🤖 حظر بوت: {mention(member.id, member.first_name)}", parse_mode="HTML")
                 except:
                     pass
             continue
 
-        # تجاهل المالك
         if member.id == OWNER_ID:
             continue
 
-        # تحقق من القائمة البيضاء
         if db.is_whitelisted(chat.id, member.id):
             continue
 
-        # تسجيل الانضمام
         db.increment_stat(chat.id, "total_joins")
         record_join(chat.id)
 
-        # ─── حماية الغارات ───
+        # حماية الغارات
         if settings.get('anti_raid', 1):
             threshold = settings.get('raid_threshold', 5)
             if check_raid(chat.id, threshold, window=10):
@@ -2622,42 +1966,32 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     elif raid_action == 'mute':
                         await chat.restrict_member(member.id, ChatPermissions(can_send_messages=False))
                         action_text = "كتم"
-                    else:  # kick
+                    else:
                         await chat.ban_member(member.id)
                         await chat.unban_member(member.id)
                         action_text = "طرد"
                     db.increment_stat(chat.id, "total_raids_blocked")
-                    await chat.send_message(
-                        f"🛡️ <b>كشف غارة!</b> تم {action_text} {mention(member.id, member.first_name)}",
-                        parse_mode="HTML"
-                    )
-                    await send_log(chat.id, f"🛡️ غارة: تم {action_text} {mention(member.id, member.first_name)}", context)
+                    await chat.send_message(f"🛡️ <b>غارة!</b> تم {action_text} {mention(member.id, member.first_name)}", parse_mode="HTML")
                 except:
                     pass
                 continue
 
-        # ─── كابتشا الدخول ───
+        # كابتشا
         if settings.get('captcha_enabled', 0):
             try:
-                import random
                 num1 = random.randint(1, 10)
                 num2 = random.randint(1, 10)
                 answer = str(num1 + num2)
                 captcha_msg = await chat.send_message(
-                    f"🔐 <b>تحقق أنك لست روبوت!</b>\n\n"
-                    f"👤 {mention(member.id, member.first_name)}\n"
-                    f"📝 كم يساوي {num1} + {num2} ؟\n"
-                    f"⏰ لديك 60 ثانية للإجابة",
+                    f"🔐 <b>تحقق!</b>\n\n👤 {mention(member.id, member.first_name)}\n📝 كم يساوي {num1} + {num2} ؟\n⏰ لديك 60 ثانية",
                     parse_mode="HTML"
                 )
-                db.add_captcha(chat.id, member.id, captcha_msg.message_id, answer)
-                # كتم مؤقت حتى الإجابة
                 await chat.restrict_member(member.id, ChatPermissions(can_send_messages=False))
             except:
                 pass
             continue
 
-        # ─── رسالة الترحيب ───
+        # ترحيب
         welcome_msg = settings.get('welcome_msg', '')
         if welcome_msg:
             formatted = welcome_msg.replace('{user}', mention(member.id, member.first_name))
@@ -2668,43 +2002,10 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def left_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """معالجة مغادرة الأعضاء"""
     chat = update.effective_chat
     if not chat:
         return
     db.increment_stat(chat.id, "total_leaves")
-    # إزالة الكابتشا إذا كان المستخدم غادر
-    left_user = update.message.left_chat_member
-    if left_user:
-        db.remove_captcha(chat.id, left_user.id)
-
-
-# ═════════════════════════════════════════════════════════════════
-# منع القنوات والتوجيه
-# ═════════════════════════════════════════════════════════════════
-
-async def channel_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """منع الرسائل من القنوات المرتبطة"""
-    if not update.effective_chat:
-        return
-    chat = update.effective_chat
-    settings = db.get_settings(chat.id)
-
-    if settings.get('anti_channel', 1):
-        if update.message and update.message.sender_chat:
-            try:
-                await update.message.delete()
-                db.increment_stat(chat.id, "total_deleted")
-            except:
-                pass
-
-    if settings.get('anti_forward', 0):
-        if update.message and update.message.forward_date:
-            try:
-                await update.message.delete()
-                db.increment_stat(chat.id, "total_deleted")
-            except:
-                pass
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -2712,16 +2013,12 @@ async def channel_message_handler(update: Update, context: ContextTypes.DEFAULT_
 # ═════════════════════════════════════════════════════════════════
 
 async def check_temp_mutes(context: ContextTypes.DEFAULT_TYPE):
-    """فحص وإلغاء الكتم المؤقت المنتهي"""
     expired = db.get_expired_mutes()
     for mute in expired:
         try:
-            perms = ChatPermissions(
-                can_send_messages=True, can_send_media_messages=True,
-                can_send_other_messages=True, can_add_web_page_previews=True
-            )
+            perms = ChatPermissions(can_send_messages=True, can_send_media_messages=True,
+                                   can_send_other_messages=True, can_add_web_page_previews=True)
             await context.bot.restrict_chat_member(mute['chat_id'], mute['user_id'], perms)
-            await send_log(mute['chat_id'], f"🔊 انتهى الكتم المؤقت لـ <code>{mute['user_id']}</code>", context)
         except:
             pass
 
@@ -2731,20 +2028,17 @@ async def check_temp_mutes(context: ContextTypes.DEFAULT_TYPE):
 # ═════════════════════════════════════════════════════════════════
 
 def main():
-    """تشغيل البوت"""
-    # تشغيل Flask في خيط منفصل
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
 
-    # إنشاء التطبيق
     app = Application.builder().token(TOKEN).build()
 
-    # تسجيل المعالجات
+    # تسجيل المعالجات - الترتيب مهم!
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("panel", panel_cmd))
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    # معالجة الرسائل النصية
+    # معالجة الرسائل النصية في المجموعات
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & filters.ChatType.GROUPS,
         message_handler
@@ -2752,20 +2046,14 @@ def main():
 
     # معالجة انضمام الأعضاء
     app.add_handler(MessageHandler(
-        filters.StatusUpdate.NEW_CHAT_MEMBERS,
+        filters.StatusUpdate.NEW_CHAT_MEMBERS & filters.ChatType.GROUPS,
         new_member_handler
     ))
 
     # معالجة مغادرة الأعضاء
     app.add_handler(MessageHandler(
-        filters.StatusUpdate.LEFT_CHAT_MEMBER,
+        filters.StatusUpdate.LEFT_CHAT_MEMBER & filters.ChatType.GROUPS,
         left_member_handler
-    ))
-
-    # معالجة رسائل القنوات والتوجيه
-    app.add_handler(MessageHandler(
-        filters.ChatType.GROUPS & ~filters.COMMAND,
-        channel_message_handler
     ))
 
     # جدولة فحص الكتم المؤقت
@@ -2774,7 +2062,7 @@ def main():
             app.job_queue.run_repeating(check_temp_mutes, interval=60, first=10)
             logger.info("✅ تم تسجيل جدولة الكتم المؤقت")
         else:
-            logger.warning("⚠️ JobQueue غير متاح، سيتم استخدام خيط بديل")
+            logger.warning("⚠️ JobQueue غير متاح - استخدام خيط بديل")
             def temp_mute_checker():
                 while True:
                     try:
@@ -2790,7 +2078,7 @@ def main():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v5.0 - الحماية المتقدمة يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v5.1 يعمل الآن!")
     app.run_polling(drop_pending_updates=True)
 
 

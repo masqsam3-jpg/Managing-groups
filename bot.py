@@ -13,7 +13,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Replace with your bot's token
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "8651632152:AAHMLhhLpG4m6Wh9WHvaqY0q54_B0L8xF4U"
 
 # --- Global Configuration (can be moved to a config file later) ---
 WELCOME_MESSAGE = "مرحباً بك يا {user_mention} في مجموعتنا! يرجى قراءة القواعد."

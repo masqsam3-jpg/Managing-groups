@@ -7905,17 +7905,11 @@ def main():
                 time.sleep(15)
             elif "Unauthorized" in error_str or "HTTP 401" in error_str:
                 logger.critical(f"❌ TOKEN غير صالح! البوت لن يعمل. تحقق من التوكن.")
+                # إعادة تشغيل كاملة - Render سيعيد التشغيل وسيقرأ التوكن الجديد
+                logger.info("⏳ إعادة تشغيل كاملة بعد 60 ثانية - التوكن قد يتم تحديثه...")
                 release_singleton_lock()
-                # لا تخرج نهائياً - انتظر لأن التوكن قد يتم تحديثه
-                logger.info("⏳ الانتظار 5 دقائق لإعادة المحاولة - التوكن قد يتم تحديثه...")
-                time.sleep(300)
-                # محاولة إعادة قراءة التوكن
-                global TOKEN
-                TOKEN = os.environ.get("TOKEN", "")
-                if TOKEN:
-                    logger.info("🔄 تم العثور على توكن جديد - إعادة المحاولة")
-                    continue
-                return
+                time.sleep(60)
+                os._exit(1)
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
                 logger.error(f"❌ Error type: {type(e).__name__}")

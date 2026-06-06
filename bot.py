@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║    🛡️ بوت إدارة المجموعات المتكامل v7.0 - الإصدار الخارق 🛡️    ║
+║    🛡️ بوت إدارة المجموعات المتكامل v9.0 - الإصدار الخارق 🛡️    ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
@@ -17,6 +17,7 @@ import time
 import json
 import random
 import asyncio
+from html import escape as html_escape
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
 from waitress import serve
@@ -64,9 +65,8 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v7.1",
+        "bot": "Group Manager v9.0",
         "token_set": bool(TOKEN),
-        "owner_id": OWNER_ID,
         "uptime": True
     }), 200
 
@@ -150,6 +150,7 @@ class Database:
                 ai_reply INTEGER DEFAULT 0,
                 absence_mode INTEGER DEFAULT 0,
                 auto_welcome INTEGER DEFAULT 1,
+                welcome_back_msg TEXT DEFAULT 'مرحباً بعودتك يا {user}! 🎊',
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
             # التحذيرات
@@ -639,6 +640,24 @@ class Database:
             conn.commit()
             conn.close()
 
+    def is_captcha_pending(self, chat_id, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT 1 FROM captcha_pending WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+            row = c.fetchone()
+            conn.close()
+            return row is not None
+
+    def get_captcha_answer(self, chat_id, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT correct_answer FROM captcha_pending WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
+            row = c.fetchone()
+            conn.close()
+            return row[0] if row else None
+
     # ═══ السمعة ═══
     def add_rep(self, chat_id, user_id, amount=1):
         with self.lock:
@@ -921,7 +940,7 @@ async def check_bot_admin(chat, bot_id: int) -> bool:
         return False
 
 def mention(user_id, name):
-    safe_name = name if name else "مستخدم"
+    safe_name = html_escape(name) if name else "مستخدم"
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
 
 def parse_time(time_str):
@@ -1198,6 +1217,8 @@ def kb_other():
          InlineKeyboardButton("🎯 عملة", callback_data="act_coin")],
         [InlineKeyboardButton("📨 إرسال رسالة", callback_data="act_send"),
          InlineKeyboardButton("📋 قائمة الأعضاء", callback_data="act_list")],
+        [InlineKeyboardButton("📦 نسخ احتياطي", callback_data="act_backup"),
+         InlineKeyboardButton("🆔 معرفات", callback_data="act_id")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -1289,7 +1310,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == OWNER_ID:
         is_adm = True
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v7.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v9.0</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "🤖 <b>ذكاء اصطناعي</b> ردود ذكية تلقائية في المجموعة\n"
@@ -1297,7 +1318,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⭐ <b>نظام سمعة وأدوار</b> لتقييم أعضاء المجموعة\n"
         "⏰ <b>جدولة رسائل</b> إرسال تلقائي في أوقات محددة\n"
         "🖤 <b>قائمة سوداء</b> حظر تلقائي دائم\n"
-        "🌙 <b>وضع الغياب</b> إدارة تلقائية عند غياب المشرفين\n\n"
+        "🌙 <b>وضع الغياب</b> إدارة تلقائية عند غياب المشرفين\n"
+        "🆕 <b>نسخ احتياطي</b> تصدير واستيراد الإعدادات\n\n"
         "👇 اختر أي قسم من الأزرار أدناه:"
     )
     try:
@@ -1318,13 +1340,13 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await safe_answer(query)
     data = query.data
     chat = update.effective_chat
     user_id = query.from_user.id
     is_adm = await check_is_admin(chat, user_id) if chat else (user_id == OWNER_ID)
     is_owner = user_id == OWNER_ID
     bot_adm = await check_bot_admin(chat, context.bot.id) if chat else False
+    await safe_answer(query)  # إزالة مؤشر التحميل
 
     try:
         # ═══ القائمة الرئيسية ═══
@@ -2012,6 +2034,35 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "act_coin":
             result = random.choice(["رأس", "كتابة"])
             await safe_edit(query, f"🪙 النتيجة: <b>{result}</b>", reply_markup=kb_back())
+        elif data == "act_id":
+            text = f"🆔 <b>معلومات المعرفات</b>\n\n"
+            text += f"👤 اسمك: {mention(user_id, query.from_user.first_name)}\n"
+            text += f"📱 معرفك: <code>{user_id}</code>\n"
+            if chat and chat.type != "private":
+                text += f"👥 المجموعة: <b>{html_escape(chat.title or 'غير معروف')}</b>\n"
+                text += f"🆔 معرف المجموعة: <code>{chat.id}</code>\n"
+            await safe_edit(query, text, reply_markup=kb_back())
+        elif data == "act_backup":
+            if not is_adm: return
+            settings = db.get_settings(chat.id)
+            locks = db.get_all_locks(chat.id)
+            badwords = db.get_badwords(chat.id)
+            notes = db.get_all_notes(chat.id)
+            filters_list = db.get_all_filters(chat.id)
+            backup_data = {
+                "chat_id": chat.id, "chat_title": chat.title,
+                "backup_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "settings": settings, "locks": locks,
+                "badwords": badwords, "notes": notes, "filters": filters_list,
+            }
+            backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+            await safe_edit(query,
+                f"📦 <b>نسخة احتياطية</b>\n\n"
+                f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                f"🔒 الأقفال: {len(locks)}\n📝 الملاحظات: {len(notes)}\n"
+                f"🔍 الفلاتر: {len(filters_list)}\n🔤 الكلمات: {len(badwords)}\n\n"
+                f"<code>{backup_json[:3500]}</code>",
+                reply_markup=kb_back())
         elif data == "act_send":
             if not is_adm: return
             context.user_data["waiting"] = "send"
@@ -2103,6 +2154,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     is_adm = await check_is_admin(chat, user_id)
     is_owner = user_id == OWNER_ID
+
+    # ═══ تحقق الكابتشا ═══
+    if text and db.is_captcha_pending(chat.id, user_id):
+        correct = db.get_captcha_answer(chat.id, user_id)
+        if text.strip() == correct:
+            db.remove_captcha(chat.id, user_id)
+            try:
+                await chat.restrict_member(user_id, ChatPermissions(
+                    can_send_messages=True, can_send_photos=True, can_send_videos=True,
+                    can_send_audios=True, can_send_documents=True, can_send_video_notes=True,
+                    can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
+                    can_add_web_page_previews=True,
+                ))
+                await msg.reply_text("✅ تم التحقق بنجاح! أهلاً بك في المجموعة 🎉")
+            except: pass
+        else:
+            try:
+                await msg.delete()
+            except: pass
+        return
 
     # ═══ معالجة وضع الانتظار ═══
     waiting = context.user_data.get("waiting")
@@ -2952,6 +3023,60 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # معالجة الرسائل المعدّلة
 # ═════════════════════════════════════════════════════════════════
 
+async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة الرسائل غير النصية (صور، فيديو، الخ) - لدعم أقفال الوسائط"""
+    if not update.message or not update.effective_chat:
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    msg = update.message
+    if not user:
+        return
+    if user.id == OWNER_ID or user.id in SUDO_USERS:
+        return
+    is_adm = await check_is_admin(chat, user.id)
+    if is_adm:
+        return
+    if db.is_whitelisted(chat.id, user.id):
+        return
+    
+    settings = db.get_settings(chat.id)
+    locks = db.get_all_locks(chat.id)
+    deleted = False
+    
+    # فحص الأقفال حسب نوع الرسالة
+    lock_media_map = {
+        "photos": msg.photo, "videos": msg.video, "stickers": msg.sticker,
+        "animations": msg.animation, "voice": msg.voice, "audio": msg.audio,
+        "documents": msg.document, "polls": msg.poll, "contacts": msg.contact,
+        "location": msg.location or msg.venue, "venue": msg.venue,
+    }
+    for lock_type, has_media in lock_media_map.items():
+        if lock_type in locks and has_media:
+            try:
+                await msg.delete()
+                db.increment_stat(chat.id, "total_deleted")
+                deleted = True
+            except: pass
+            break
+    
+    # فحص الروابط في الـ caption
+    if not deleted and msg.caption:
+        if "links" in locks and has_link(msg.caption):
+            try:
+                await msg.delete()
+                db.increment_stat(chat.id, "total_deleted")
+                db.increment_stat(chat.id, "total_links_blocked")
+                deleted = True
+            except: pass
+        elif settings.get('anti_link', 1) and has_link(msg.caption):
+            try:
+                await msg.delete()
+                db.increment_stat(chat.id, "total_deleted")
+                db.increment_stat(chat.id, "total_links_blocked")
+            except: pass
+
+
 async def edited_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.edited_message or not update.effective_chat:
         return
@@ -3050,12 +3175,18 @@ async def new_member_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
             except: pass
             continue
 
-        # ترحيب
+        # ترحيب - مع تمييز العائدين
         if settings.get('auto_welcome', 1):
-            welcome_msg = settings.get('welcome_msg', '')
-            if not welcome_msg:
-                welcome_msg = DEFAULT_WELCOME
-            formatted = welcome_msg.replace('{user}', mention(member.id, member.first_name))
+            # فحص هل المستخدم كان في المجموعة من قبل (له رسائل مسجلة)
+            is_returning = db.get_msg_count(chat.id, member.id) > 0
+            if is_returning:
+                welcome_back_msg = settings.get('welcome_back_msg', 'مرحباً بعودتك يا {user}! 🎊')
+                formatted = welcome_back_msg.replace('{user}', mention(member.id, member.first_name))
+            else:
+                welcome_msg = settings.get('welcome_msg', '')
+                if not welcome_msg:
+                    welcome_msg = DEFAULT_WELCOME
+                formatted = welcome_msg.replace('{user}', mention(member.id, member.first_name))
             try:
                 await chat.send_message(formatted, parse_mode="HTML")
             except: pass
@@ -3151,9 +3282,7 @@ def build_and_run():
     """بناء التطبيق وتشغيله - مع إعادة تشغيل تلقائي عند الفشل"""
     kill_existing_instances()
 
-    app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
-
-    # ═══ إصلاح مشكلة Conflict: حذف أي webhook أو getUpdates سابق ═══
+    # ═══ تعريف post_init قبل بناء التطبيق ═══
     async def post_init(application):
         """يتم تنفيذه بعد بناء التطبيق وقبل بدء polling - يمنع خطأ Conflict"""
         try:
@@ -3166,6 +3295,7 @@ def build_and_run():
                 BotCommand("start", "🛡️ لوحة التحكم الرئيسية"),
                 BotCommand("panel", "📋 فتح لوحة التحكم"),
                 BotCommand("help", "❓ المساعدة"),
+                BotCommand("id", "🆔 معرف المستخدم والمجموعة"),
                 BotCommand("ban", "🚫 حظر مستخدم (رد على رسالته)"),
                 BotCommand("unban", "✅ إلغاء حظر (رد على رسالته)"),
                 BotCommand("mute", "🔇 كتم مستخدم (رد على رسالته)"),
@@ -3189,11 +3319,12 @@ def build_and_run():
                 BotCommand("graphic", "📊 رسم بياني للمجموعة"),
                 BotCommand("send", "📨 إرسال رسالة لعضو"),
             ])
-            logger.info("✅ تم تعيين قائمة الأوامر في تيليجرام")
+            logger.info("✅ تم تعيين قائمة الأوامر في تلييجرام")
         except Exception as e:
             logger.warning(f"⚠️ لم يتم تعيين قائمة الأوامر: {e}")
 
-    app.post_init = post_init
+    # ═══ بناء التطبيق مع تمرير post_init للـ builder (إصلاح C1) ═══
+    app = Application.builder().token(TOKEN).post_init(post_init).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
 
     # ═══ تسجيل معالجات الأوامر الرئيسية ═══
     app.add_handler(CommandHandler("start", start_cmd))
@@ -3218,6 +3349,10 @@ def build_and_run():
         target_id = target.from_user.id
         target_name = target.from_user.first_name
         reason = " ".join(context.args) if context.args else "بدون سبب"
+        if target_id == user.id:
+            await msg.reply_text("❌ لا يمكنك حظر نفسك!"); return
+        if target_id == context.bot.id:
+            await msg.reply_text("❌ لا يمكنني حظر نفسي!"); return
         try:
             await chat.ban_member(target_id)
             await msg.reply_text(f"🚫 تم حظر {mention(target_id, target_name)}\n📋 السبب: {reason}", parse_mode="HTML")
@@ -3630,13 +3765,93 @@ def build_and_run():
     app.add_handler(CommandHandler("delban", cmd_unban))      # alias
     app.add_handler(CommandHandler("delmute", cmd_unmute))    # alias
 
+    # ═══ أوامر جديدة v9.0 ═══
+    async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """أمر /id - عرض معرف المستخدم والمجموعة"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or not user:
+            return
+        text = f"🆔 <b>معلومات المعرفات</b>\n\n"
+        text += f"👤 اسمك: {mention(user.id, user.first_name)}\n"
+        text += f"📱 معرفك: <code>{user.id}</code>\n"
+        if chat.type != "private":
+            text += f"👥 المجموعة: <b>{html_escape(chat.title or 'غير معروف')}</b>\n"
+            text += f"🆔 معرف المجموعة: <code>{chat.id}</code>\n"
+            if msg.reply_to_message and msg.reply_to_message.from_user:
+                target = msg.reply_to_message.from_user
+                text += f"\n📌 المستخدم المردود عليه:\n"
+                text += f"👤 الاسم: {mention(target.id, target.first_name)}\n"
+                text += f"📱 المعرف: <code>{target.id}</code>\n"
+        await msg.reply_text(text, parse_mode="HTML")
+
+    async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """أمر /backup - تصدير إعدادات المجموعة"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private":
+            return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        settings = db.get_settings(chat.id)
+        locks = db.get_all_locks(chat.id)
+        badwords = db.get_badwords(chat.id)
+        notes = db.get_all_notes(chat.id)
+        filters_list = db.get_all_filters(chat.id)
+        backup_data = {
+            "chat_id": chat.id,
+            "chat_title": chat.title,
+            "backup_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "settings": settings,
+            "locks": locks,
+            "badwords": badwords,
+            "notes": notes,
+            "filters": filters_list,
+        }
+        backup_json = json.dumps(backup_data, ensure_ascii=False, indent=2)
+        await msg.reply_text(
+            f"📦 <b>نسخة احتياطية - {html_escape(chat.title or 'المجموعة')}</b>\n\n"
+            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"🔒 الأقفال: {len(locks)}\n"
+            f"📝 الملاحظات: {len(notes)}\n"
+            f"🔍 الفلاتر: {len(filters_list)}\n"
+            f"🔤 الكلمات المسيئة: {len(badwords)}\n\n"
+            f"<code>{backup_json[:3500]}</code>",
+            parse_mode="HTML"
+        )
+
+    async def cmd_welcome_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """أمر لتعيين رسالة الترحيب بالعودة"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private":
+            return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        welcome_back_msg = " ".join(context.args) if context.args else ""
+        if welcome_back_msg:
+            db.update_setting(chat.id, "welcome_msg", welcome_back_msg)
+            await msg.reply_text(f"✅ تم تعيين رسالة الترحيب بالعودة!\n\n📦 الرسالة:\n{welcome_back_msg}")
+        else:
+            await msg.reply_text("📝 اكتب الرسالة بعد الأمر\nمثال: /welcomeback مرحباً بعودتك يا {user}! 🎊")
+
+    app.add_handler(CommandHandler("id", cmd_id))
+    app.add_handler(CommandHandler("backup", cmd_backup))
+    app.add_handler(CommandHandler("welcomeback", cmd_welcome_back))
+
     # تسجيل معالج الأزرار التفاعلية
     app.add_handler(CallbackQueryHandler(callback_handler))
 
     # معالجة الرسائل النصية
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+
+    # معالجة الرسائل التي ليست نص (صور، فيديو، الخ) - لدعم أقفال الوسائط
     app.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        message_handler
+        ~filters.TEXT & ~filters.COMMAND,
+        media_handler
     ))
 
     # معالجة الرسائل المعدّلة
@@ -3679,7 +3894,7 @@ def build_and_run():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v8.0 يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v9.0 يعمل الآن!")
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""

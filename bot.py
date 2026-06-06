@@ -1,9 +1,10 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  🛡️ بوت إدارة المجموعات المتكامل v13.0 - الإصدار الخارق 🛡️     ║
+║  🛡️ بوت إدارة المجموعات المتكامل v15.0 - 24/7 دائم 🛡️          ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
+║  تشغيل 24/7 تلقائي | مراقبة ذاتية | تعافي فوري من الأخطاء      ║
 ║  مطور بواسطة: @masqsam3                                         ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -62,6 +63,10 @@ logger = logging.getLogger(__name__)
 TOKEN = os.environ.get("TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "8947599931"))
 RENDER_APP_URL = os.environ.get("RENDER_APP_URL", "")  # رابط التطبيق على Render
+RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")  # رابط Render الخارجي التلقائي
+# استخدام الرابط الخارجي إذا لم يحدد المستخدم رابطاً
+if not RENDER_APP_URL and RENDER_EXTERNAL_URL:
+    RENDER_APP_URL = RENDER_EXTERNAL_URL
 WARN_LIMIT = 3
 DEFAULT_WELCOME = "مرحباً بك يا {user} في مجموعتنا! 🎉\nيرجى قراءة القوانين"
 DB_PATH = "bot_database.db"
@@ -75,6 +80,9 @@ POLLING_ALIVE.set()  # يُوضع عند عمل polling ويُزال عند ال
 HEALTH_CHECK_PASSED = threading.Event()
 HEALTH_CHECK_PASSED.set()
 _last_polling_heartbeat = time.time()
+_total_restarts = 0  # عداد إعادات التشغيل
+_last_successful_poll = time.time()  # آخر polling ناجح
+_flask_ready = threading.Event()  # هل Flask جاهز؟
 
 # ═══ نظام القفل الأحادي لمنع تكرار البوت ═══
 LOCK_FILE = "/tmp/bot_singleton.lock"
@@ -138,29 +146,30 @@ else:
     logger.info(f"✅ OWNER_ID: {OWNER_ID}")
 
 # ═════════════════════════════════════════════════════════════════
-# خادم Flask للحفاظ على البوت نشطاً 24/7
+# خادم Flask للحفاظ على البوت نشطاً 24/7 - نظام متكامل
 # ═════════════════════════════════════════════════════════════════
 web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
+    global _total_restarts
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v14.0 - 24/7",
+        "bot": "Group Manager v15.0 - 24/7 Forever",
         "token_set": bool(TOKEN),
         "uptime_seconds": int(time.time() - BOT_START_TIME),
         "polling_alive": POLLING_ALIVE.is_set(),
+        "total_restarts": _total_restarts,
         "pid": os.getpid()
     }), 200
 
 @web_app.route('/health')
 def health():
-    """فحص صحي شامل - يُستخدم من Render و UptimeRobot"""
+    """فحص صحي شامل - يُستخدم من Render و UptimeRobot وخدمات المراقبة"""
     uptime = int(time.time() - BOT_START_TIME)
     polling_ok = POLLING_ALIVE.is_set()
-    # تحقق من نبض polling (إذا لم يحدث خلال 120 ثانية = مشكلة)
     heartbeat_ok = (time.time() - _last_polling_heartbeat) < 120
-    
+
     if TOKEN and polling_ok and heartbeat_ok:
         return jsonify({
             "status": "healthy",
@@ -183,15 +192,19 @@ def status():
     uptime = int(time.time() - BOT_START_TIME)
     hours = uptime // 3600
     minutes = (uptime % 3600) // 60
+    global _total_restarts
     if TOKEN:
         return jsonify({
             "status": "healthy",
+            "bot_version": "v15.0 - 24/7",
             "token": "موجود ✅",
             "token_length": len(TOKEN),
             "owner_id": OWNER_ID,
             "uptime": f"{hours}ساعة {minutes}دقيقة",
             "uptime_seconds": uptime,
             "polling_active": POLLING_ALIVE.is_set(),
+            "total_restarts": _total_restarts,
+            "render_url": RENDER_APP_URL if RENDER_APP_URL else "غير محدد",
             "pid": os.getpid(),
             "message": "البوت يعمل بشكل طبيعي 24/7"
         }), 200
@@ -205,62 +218,172 @@ def status():
 @web_app.route('/wake')
 def wake():
     """مسار خاص لإيقاظ البوت - يُستخدم من خدمة المراقبة"""
-    return jsonify({"awake": True, "pid": os.getpid()}), 200
+    return jsonify({"awake": True, "pid": os.getpid(), "status": "running"}), 200
+
+@web_app.route('/ping')
+def ping():
+    """مسار ping بسيط وسريع - مُحسّن لخدمات المراقبة الخارجية"""
+    return "pong", 200
+
+@web_app.route('/restart', methods=['POST'])
+def restart_endpoint():
+    """مسار إعادة تشغيل البوت عن بعد (يحتاج مفتاح سري)"""
+    from flask import request
+    secret = os.environ.get("RESTART_SECRET", "")
+    provided = request.headers.get("X-Restart-Secret", "")
+    if secret and provided != secret:
+        return jsonify({"error": "unauthorized"}), 401
+    logger.info("🔄 إعادة تشغيل عن طريق طلب HTTP")
+    release_singleton_lock()
+    # تأخير قصير ثم خروج - Render سيعيد التشغيل
+    threading.Timer(2.0, lambda: os._exit(0)).start()
+    return jsonify({"restarting": True}), 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
+    _flask_ready.set()
     logger.info(f"🌐 Starting production server on port {port}")
-    serve(web_app, host='0.0.0.0', port=port)
+    try:
+        serve(web_app, host='0.0.0.0', port=port, _quiet=True)
+    except Exception as e:
+        logger.error(f"❌ Flask server error: {e}")
+        # محاولة إعادة التشغيل على منفذ بديل
+        try:
+            alt_port = port + 1
+            logger.info(f"🌐 Trying alternate port {alt_port}")
+            serve(web_app, host='0.0.0.0', port=alt_port, _quiet=True)
+        except Exception as e2:
+            logger.critical(f"❌ Flask server failed completely: {e2}")
 
-# ═══ نظام Self-Ping التلقائي لإبقاء Render نشط ═══
+# ═══ نظام Self-Ping التلقائي المحسّن لإبقاء Render نشط 24/7 ═══
 def self_ping_loop():
-    """يرسل طلب لنفسه كل 14 دقيقة لمنع Render من إيقاف الخدمة"""
+    """يرسل طلب لنفسه كل 13 دقيقة لمنع Render من إيقاف الخدمة أبداً"""
     import requests as req_lib
     # الانتظار حتى يبدأ خادم Flask
-    time.sleep(15)
-    
+    _flask_ready.wait(timeout=30)
+    time.sleep(10)
+
+    ping_count = 0
+    consecutive_failures = 0
+
     while True:
+        ping_count += 1
         try:
             port = int(os.environ.get("PORT", 8080))
+            ping_ok = False
+
             # محاولة الاتصال المحلي أولاً
             try:
                 resp = req_lib.get(f"http://127.0.0.1:{port}/health", timeout=10)
-                logger.info(f"💓 Self-ping محلي: {resp.status_code}")
-            except:
-                pass
-            
+                if resp.status_code == 200:
+                    ping_ok = True
+                    consecutive_failures = 0
+                    logger.info(f"💓 Self-ping محلي #{ping_count}: ✅")
+            except Exception as e:
+                logger.warning(f"💓 Self-ping محلي #{ping_count}: ❌ {e}")
+
             # محاولة الاتصال عبر رابط Render إذا كان متاحاً
             if RENDER_APP_URL:
                 try:
                     resp = req_lib.get(f"{RENDER_APP_URL}/health", timeout=15)
-                    logger.info(f"💓 Self-ping Render: {resp.status_code}")
+                    if resp.status_code == 200:
+                        ping_ok = True
+                        consecutive_failures = 0
+                        logger.info(f"💓 Self-ping Render #{ping_count}: ✅")
+                    else:
+                        logger.warning(f"💓 Self-ping Render #{ping_count}: ⚠️ HTTP {resp.status_code}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Self-ping Render فشل: {e}")
-        except Exception as e:
-            logger.warning(f"⚠️ Self-ping error: {e}")
-        
-        # كل 14 دقيقة (قبل انتهاء مهلة Render البالغة 15 دقيقة)
-        time.sleep(840)
+                    logger.warning(f"💓 Self-ping Render #{ping_count}: ❌ {e}")
 
-# ═══ نظام مراقبة Polling التلقائي ═══
+            if ping_ok:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                logger.warning(f"⚠️ Self-ping فشل {consecutive_failures} مرة متتالية")
+
+                # إذا فشل 5 مرات متتالية، قد تكون هناك مشكلة خطيرة
+                if consecutive_failures >= 5:
+                    logger.critical("🔴 Self-ping فشل 5 مرات متتالية - إعادة تشغيل قسرية!")
+                    release_singleton_lock()
+                    os._exit(1)
+
+        except Exception as e:
+            consecutive_failures += 1
+            logger.warning(f"⚠️ Self-ping error: {e}")
+
+        # كل 13 دقيقة (قبل انتهاء مهلة Render البالغة 15 دقيقة)
+        # استخدام فترة عشوائية بين 12-14 دقيقة لتجنب الأنماط المتوقعة
+        sleep_time = random.randint(720, 840)
+        time.sleep(sleep_time)
+
+# ═══ نظام مراقبة Polling التلقائي المحسّن ═══
 def polling_watchdog():
     """يراقب أن البوت polling لا يزال يعمل - يُعيد التشغيل إذا توقف"""
     global _last_polling_heartbeat
     time.sleep(30)  # انتظر حتى يبدأ البوت
-    
+
+    check_count = 0
+    warning_count = 0
+
     while True:
-        time.sleep(90)  # فحص كل 90 ثانية
+        time.sleep(60)  # فحص كل 60 ثانية
+        check_count += 1
         try:
             heartbeat_age = time.time() - _last_polling_heartbeat
             if heartbeat_age > 180:  # لم يحدث نبض منذ 3 دقائق
-                logger.critical(f"🔴 POLLING DEAD! لم يحدث نبض منذ {int(heartbeat_age)} ثانية - إعادة تشغيل قسرية!")
-                # تحرير القفل قبل الخروج لإعادة التشغيل
-                release_singleton_lock()
-                os._exit(1)  # خروج قسري - Render سيعيد التشغيل تلقائياً
+                warning_count += 1
+                logger.critical(f"🔴 POLLING DEAD! لم يحدث نبض منذ {int(heartbeat_age)} ثانية (تحذير #{warning_count})")
+
+                if warning_count >= 3:
+                    logger.critical("🔴 3 تحذيرات متتالية - إعادة تشغيل قسرية!")
+                    release_singleton_lock()
+                    os._exit(1)  # خروج قسري - Render سيعيد التشغيل تلقائياً
+                else:
+                    # محاولة تنظيف المثيلات قبل الخروج
+                    try:
+                        import requests as req_lib
+                        req_lib.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+                                    json={"drop_pending_updates": True}, timeout=10)
+                        logger.info("✅ تم حذف الـ webhook كمحاولة تعافي")
+                    except:
+                        pass
             elif heartbeat_age > 120:
-                logger.warning(f"⚠️ Polling بطيء: آخر نبض منذ {int(heartbeat_age)} ثانية")
+                warning_count += 1
+                logger.warning(f"⚠️ Polling بطيء: آخر نبض منذ {int(heartbeat_age)} ثانية (تحذير #{warning_count})")
+            else:
+                # إعادة تعيين عداد التحذيرات إذا كان كل شيء طبيعي
+                if warning_count > 0:
+                    logger.info(f"✅ Polling تعافى - إعادة تعيين عداد التحذيرات")
+                warning_count = 0
+
+            # تسجيل نبض دوري كل 5 دقائق
+            if check_count % 5 == 0:
+                logger.info(f"🐕 Watchdog check #{check_count}: heartbeat_age={int(heartbeat_age)}s, warnings={warning_count}")
+
         except Exception as e:
             logger.error(f"⚠️ Watchdog error: {e}")
+
+# ═══ نظام مراقبة الذاكرة والموارد ═══
+def resource_monitor():
+    """يراقب استهلاك الموارد ويعيد التشغيل إذا كان هناك تسرب ذاكرة"""
+    import resource as res_module
+    time.sleep(60)  # انتظر حتى يستقر البوت
+
+    while True:
+        time.sleep(300)  # فحص كل 5 دقائق
+        try:
+            # فحص استخدام الذاكرة
+            mem_mb = res_module.getrusage(res_module.RUSAGE_SELF).ru_maxrss / 1024  # KB to MB
+            if mem_mb > 500:  # أكثر من 500 ميجابايت
+                logger.critical(f"🔴 Memory usage too high: {mem_mb:.1f}MB - restarting!")
+                release_singleton_lock()
+                os._exit(1)
+            elif mem_mb > 300:
+                logger.warning(f"⚠️ High memory usage: {mem_mb:.1f}MB")
+            else:
+                logger.info(f"💾 Memory usage: {mem_mb:.1f}MB ✅")
+        except Exception as e:
+            logger.warning(f"⚠️ Resource monitor error: {e}")
 
 # ═════════════════════════════════════════════════════════════════
 # نظام قاعدة البيانات SQLite
@@ -7600,6 +7723,9 @@ def build_application():
 def main():
     if not TOKEN:
         logger.error("❌ لم يتم تعيين TOKEN! قم بتعيين متغير البيئة TOKEN")
+        # لا تخرج - انتظر لأن Render قد يعين التوكن لاحقاً
+        logger.info("⏳ الانتظار 60 ثانية لإعادة المحاولة...")
+        time.sleep(60)
         return
 
     # ═══ محاولة الحصول على قفل أحادي ═══
@@ -7618,11 +7744,34 @@ def main():
                 logger.error("❌ لا يمكن الحصول على القفل. الخروج وإعادة المحاولة عبر Render.")
                 return
 
+    # ═══ تنظيف المثيلات السابقة قبل البدء ═══
+    logger.info("🧹 تنظيف المثيلات السابقة لمنع خطأ Conflict...")
+    try:
+        import requests as req_lib
+        # حذف الـ webhook أولاً
+        req_lib.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+                    json={"drop_pending_updates": True}, timeout=10)
+        time.sleep(3)
+        # تفريغ التحديثات المعلقة
+        try:
+            req_lib.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1", timeout=10)
+        except:
+            pass
+        time.sleep(2)
+        # حذف الـ webhook مرة أخرى
+        req_lib.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+                    json={"drop_pending_updates": True}, timeout=10)
+        time.sleep(5)
+        logger.info("✅ تم تنظيف المثيلات السابقة بنجاح")
+    except Exception as e:
+        logger.warning(f"⚠️ خطأ أثناء التنظيف الأولي: {e}")
+
     # ═══ معالجات الإغلاق الأنيق ═══
     def signal_handler(signum, frame):
         logger.info(f"🛑 Received signal {signum}, shutting down gracefully...")
         POLLING_ALIVE.clear()  # إعلام Watchdog بالتوقف
         release_singleton_lock()
+        # لا تخرج - دع Render يعيد التشغيل
         sys.exit(0)
 
     signal_module.signal(signal_module.SIGTERM, signal_handler)
@@ -7636,31 +7785,39 @@ def main():
     # ═══ بدء نظام Self-Ping لإبقاء Render نشط ═══
     ping_thread = threading.Thread(target=self_ping_loop, daemon=True)
     ping_thread.start()
-    logger.info("✅ نظام Self-Ping بدأ (كل 14 دقيقة)")
+    logger.info("✅ نظام Self-Ping بدأ (كل 12-14 دقيقة)")
 
     # ═══ بدء نظام مراقبة Polling ═══
     watchdog_thread = threading.Thread(target=polling_watchdog, daemon=True)
     watchdog_thread.start()
-    logger.info("✅ نظام مراقبة Polling بدأ (كل 90 ثانية)")
+    logger.info("✅ نظام مراقبة Polling بدأ (كل 60 ثانية)")
 
-    # ═══ نظام إعادة التشغيل التلقائي اللانهائي - 24/7 ═══
+    # ═══ بدء نظام مراقبة الموارد ═══
+    resource_thread = threading.Thread(target=resource_monitor, daemon=True)
+    resource_thread.start()
+    logger.info("✅ نظام مراقبة الموارد بدأ (كل 5 دقائق)")
+
+    # ═══ نظام إعادة التشغيل التلقائي اللانهائي - 24/7 للأبد ═══
     retry_count = 0
+    successful_runs = 0
 
     while True:  # ← حلقة لا نهائية - البوت لن يتوقف أبداً
         app = None
-        global _last_polling_heartbeat
+        global _last_polling_heartbeat, _total_restarts
         _last_polling_heartbeat = time.time()  # تحديث نبض القلب
         POLLING_ALIVE.set()  # إعلام Watchdog بأن polling يعمل
 
         try:
             app = build_application()
-            logger.info("🛡️ بوت إدارة المجموعات v14.0 - 24/7 يعمل الآن!")
-            
+            _total_restarts += 1
+            logger.info(f"🛡️ بوت إدارة المجموعات v15.0 - 24/7 يعمل الآن! (تشغيل #{_total_restarts})")
+            logger.info(f"🌐 Render URL: {RENDER_APP_URL if RENDER_APP_URL else 'غير محدد - حدد RENDER_APP_URL!'}")
+
             # تشغيل polling مع تحديث نبض القلب
             async def run_with_heartbeat():
                 """تشغيل polling مع تحديث نبض القلب دورياً"""
                 global _last_polling_heartbeat
-                
+
                 # إعداد مهمة تحديث نبض القلب
                 if app.job_queue:
                     async def heartbeat_job(context):
@@ -7668,7 +7825,7 @@ def main():
                         _last_polling_heartbeat = time.time()
                     app.job_queue.run_repeating(heartbeat_job, interval=30, first=5)
                     logger.info("✅ نبض القلب التلقائي بدأ (كل 30 ثانية)")
-                
+
                 # بدء polling
                 await app.initialize()
                 await app.start()
@@ -7676,14 +7833,14 @@ def main():
                     drop_pending_updates=True,
                     allowed_updates=Update.ALL_TYPES
                 )
-                logger.info("✅ Polling بدأ بنجاح - البوت يعمل 24/7")
-                
+                logger.info("✅ Polling بدأ بنجاح - البوت يعمل 24/7 للأبد")
+
                 # إبقاء التشغيل حتى يتم إيقافه
                 while True:
                     await asyncio.sleep(1)
                     if not POLLING_ALIVE.is_set():
                         break
-            
+
             # تشغيل في event loop
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -7700,9 +7857,10 @@ def main():
                 except:
                     pass
                 loop.close()
-            
-            # إذا وصلنا هنا، polling توقف
-            logger.warning("⚠️ run_polling stopped - إعادة التشغيل تلقائياً")
+
+            # إذا وصلنا هنا، polling توقف بشكل طبيعي
+            successful_runs += 1
+            logger.warning(f"⚠️ run_polling stopped - إعادة التشغيل تلقائياً (تشغيل ناجح #{successful_runs})")
             POLLING_ALIVE.clear()
 
         except Conflict as e:
@@ -7710,9 +7868,14 @@ def main():
             wait_time = min(120, 30 * retry_count)
             logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting {wait_time}s...")
             POLLING_ALIVE.clear()
-            # حذف webhook عبر REST API
+            # حذف webhook عبر REST API - تنظيف شامل
             try:
                 import requests as req
+                req.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+                        json={"drop_pending_updates": True}, timeout=10)
+                time.sleep(3)
+                req.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1", timeout=10)
+                time.sleep(2)
                 req.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
                         json={"drop_pending_updates": True}, timeout=10)
             except:
@@ -7729,23 +7892,37 @@ def main():
             elif "Unauthorized" in error_str or "HTTP 401" in error_str:
                 logger.critical(f"❌ TOKEN غير صالح! البوت لن يعمل. تحقق من التوكن.")
                 release_singleton_lock()
+                # لا تخرج نهائياً - انتظر لأن التوكن قد يتم تحديثه
+                logger.info("⏳ الانتظار 5 دقائق لإعادة المحاولة - التوكن قد يتم تحديثه...")
+                time.sleep(300)
+                # محاولة إعادة قراءة التوكن
+                global TOKEN
+                TOKEN = os.environ.get("TOKEN", "")
+                if TOKEN:
+                    logger.info("🔄 تم العثور على توكن جديد - إعادة المحاولة")
+                    continue
                 return
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
                 logger.error(f"❌ Error type: {type(e).__name__}")
-                # إعادة التشغيل بعد انتظار
-                wait_time = min(60, 10 * retry_count)
+                # إعادة التشغيل بعد انتظار متزايد
+                wait_time = min(120, 15 * retry_count)
+                logger.info(f"⏳ الانتظار {wait_time} ثانية قبل إعادة المحاولة...")
                 time.sleep(wait_time)
-        
+
         # إعادة تعيين عداد المحاولات بعد نجاح التشغيل لفترة
         if retry_count > 0:
-            # إذا وصلنا هنا بعد خطأ، نحاول مرة أخرى
-            logger.info(f"🔄 إعادة المحاولة #{retry_count} - البوت لن يتوقف (24/7)")
-        
-        # إعادة تعيين العداد بعد 5 محاولات ناجحة متتالية
-        if retry_count > 50:
+            logger.info(f"🔄 إعادة المحاولة #{retry_count} - البوت لن يتوقف أبداً (24/7)")
+
+        # إعادة تعيين العداد بعد تشغيل ناجح
+        if successful_runs > 0 and retry_count > 0:
+            retry_count = max(0, retry_count - 1)
+
+        # إعادة تعيين كامل بعد 10 محاولات ناجحة متتالية
+        if successful_runs > 10:
             retry_count = 0
-            logger.info("✅ تم إعادة تعيين عداد المحاولات")
+            successful_runs = 0
+            logger.info("✅ تم إعادة تعيين عداد المحاولات - البوت يعمل بشكل مستقر")
 
     release_singleton_lock()
     logger.info("🛑 Bot shut down complete")

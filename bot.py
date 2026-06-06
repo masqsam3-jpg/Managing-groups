@@ -67,6 +67,9 @@ RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")  # رابط Rend
 # استخدام الرابط الخارجي إذا لم يحدد المستخدم رابطاً
 if not RENDER_APP_URL and RENDER_EXTERNAL_URL:
     RENDER_APP_URL = RENDER_EXTERNAL_URL
+# إذا لم يحدد أي رابط، استخدم الرابط الافتراضي المعروف
+if not RENDER_APP_URL:
+    RENDER_APP_URL = "https://managing-groups.onrender.com"
 WARN_LIMIT = 3
 DEFAULT_WELCOME = "مرحباً بك يا {user} في مجموعتنا! 🎉\nيرجى قراءة القوانين"
 DB_PATH = "bot_database.db"
@@ -7758,24 +7761,22 @@ def main():
                 logger.error("❌ لا يمكن الحصول على القفل. الخروج وإعادة المحاولة عبر Render.")
                 return
 
-    # ═══ تنظيف المثيلات السابقة قبل البدء ═══
+    # ═══ تنظيف المثيلات السابقة قبل البدء (سريع) ═══
     logger.info("🧹 تنظيف المثيلات السابقة لمنع خطأ Conflict...")
     try:
         import requests as req_lib
-        # حذف الـ webhook أولاً
+        # حذف الـ webhook + تفريغ التحديثات + حذف الـ webhook مرة أخرى
         req_lib.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
                     json={"drop_pending_updates": True}, timeout=10)
-        time.sleep(3)
-        # تفريغ التحديثات المعلقة
+        time.sleep(1)
         try:
             req_lib.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates?offset=-1", timeout=10)
         except:
             pass
-        time.sleep(2)
-        # حذف الـ webhook مرة أخرى
+        time.sleep(1)
         req_lib.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
                     json={"drop_pending_updates": True}, timeout=10)
-        time.sleep(5)
+        time.sleep(2)
         logger.info("✅ تم تنظيف المثيلات السابقة بنجاح")
     except Exception as e:
         logger.warning(f"⚠️ خطأ أثناء التنظيف الأولي: {e}")

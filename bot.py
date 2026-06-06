@@ -367,6 +367,43 @@ class Database:
             c.execute("CREATE TABLE IF NOT EXISTS voice_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user_id INTEGER, file_id TEXT DEFAULT '', duration INTEGER DEFAULT 0, transcription TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             c.execute("CREATE TABLE IF NOT EXISTS group_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, backup_data TEXT DEFAULT '', backup_type TEXT DEFAULT 'full', created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             c.execute("CREATE TABLE IF NOT EXISTS botnet_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, source_chat_id INTEGER, target_bot_id INTEGER DEFAULT 0, command TEXT DEFAULT '', message TEXT, status TEXT DEFAULT 'sent', sent_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            # جدول البوت الشخصي - ربط بوت بحساب المستخدم للرد التلقائي المجدول
+            c.execute('''CREATE TABLE IF NOT EXISTS personal_bots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                bot_username TEXT DEFAULT '',
+                bot_token TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                auto_reply_enabled INTEGER DEFAULT 0,
+                schedule_enabled INTEGER DEFAULT 0,
+                schedule_start TEXT DEFAULT '00:00',
+                schedule_end TEXT DEFAULT '23:59',
+                schedule_days TEXT DEFAULT '0,1,2,3,4,5,6',
+                away_message TEXT DEFAULT '',
+                linked_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id)
+            )''')
+            # قواعد الرد التلقائي الشخصي
+            c.execute('''CREATE TABLE IF NOT EXISTS personal_bot_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                trigger_type TEXT DEFAULT 'keyword',
+                trigger_value TEXT NOT NULL,
+                reply_text TEXT NOT NULL,
+                match_mode TEXT DEFAULT 'contains',
+                priority INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )''')
+            # سجل رسائل البوت الشخصي
+            c.execute('''CREATE TABLE IF NOT EXISTS personal_bot_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                trigger_message TEXT DEFAULT '',
+                sent_reply TEXT DEFAULT '',
+                replied_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )''')
             conn.commit()
             conn.close()
 
@@ -897,6 +934,113 @@ class Database:
             conn.commit()
             conn.close()
             return d
+
+    # ═══ البوت الشخصي - ربط بوت بالحساب الشخصي ═══
+    def link_personal_bot(self, user_id, bot_username='', bot_token='', away_message=''):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("""INSERT OR REPLACE INTO personal_bots
+                (user_id, bot_username, bot_token, is_active, auto_reply_enabled, away_message, linked_at)
+                VALUES (?, ?, ?, 1, 1, ?, CURRENT_TIMESTAMP)""",
+                (user_id, bot_username, bot_token, away_message))
+            conn.commit()
+            conn.close()
+
+    def unlink_personal_bot(self, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM personal_bots WHERE user_id = ?", (user_id,))
+            c.execute("DELETE FROM personal_bot_rules WHERE user_id = ?", (user_id,))
+            conn.commit()
+            conn.close()
+
+    def get_personal_bot(self, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM personal_bots WHERE user_id = ?", (user_id,))
+            row = c.fetchone()
+            conn.close()
+            return dict(row) if row else None
+
+    def update_personal_bot(self, user_id, **kwargs):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            for key, value in kwargs.items():
+                c.execute(f"UPDATE personal_bots SET {key} = ? WHERE user_id = ?", (value, user_id))
+            conn.commit()
+            conn.close()
+
+    def add_personal_bot_rule(self, user_id, trigger_type, trigger_value, reply_text, match_mode='contains', priority=0):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("""INSERT INTO personal_bot_rules
+                (user_id, trigger_type, trigger_value, reply_text, match_mode, priority, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, 1)""",
+                (user_id, trigger_type, trigger_value, reply_text, match_mode, priority))
+            rule_id = c.lastrowid
+            conn.commit()
+            conn.close()
+            return rule_id
+
+    def get_personal_bot_rules(self, user_id, active_only=True):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            if active_only:
+                c.execute("SELECT * FROM personal_bot_rules WHERE user_id = ? AND is_active = 1 ORDER BY priority DESC", (user_id,))
+            else:
+                c.execute("SELECT * FROM personal_bot_rules WHERE user_id = ? ORDER BY priority DESC", (user_id,))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    def delete_personal_bot_rule(self, rule_id, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM personal_bot_rules WHERE id = ? AND user_id = ?", (rule_id, user_id))
+            d = c.rowcount > 0
+            conn.commit()
+            conn.close()
+            return d
+
+    def toggle_personal_bot_rule(self, rule_id, user_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT is_active FROM personal_bot_rules WHERE id = ? AND user_id = ?", (rule_id, user_id))
+            row = c.fetchone()
+            if row:
+                new_val = 0 if row[0] else 1
+                c.execute("UPDATE personal_bot_rules SET is_active = ? WHERE id = ?", (new_val, rule_id))
+                conn.commit()
+                conn.close()
+                return new_val
+            conn.close()
+            return None
+
+    def log_personal_bot_reply(self, user_id, chat_id, trigger_message, sent_reply):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("""INSERT INTO personal_bot_log (user_id, chat_id, trigger_message, sent_reply)
+                VALUES (?, ?, ?, ?)""", (user_id, chat_id, trigger_message, sent_reply))
+            conn.commit()
+            conn.close()
+
+    def get_personal_bot_log(self, user_id, limit=20):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM personal_bot_log WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
 
     # ═══ الأدوار المخصصة ═══
     def assign_role(self, chat_id, user_id, role_name, assigned_by):
@@ -2263,6 +2407,7 @@ def kb_main(is_adm=False):
          InlineKeyboardButton("📨 الرسائل", callback_data="menu_messages")],
         [InlineKeyboardButton("🤖 شبكة البوتات", callback_data="menu_botnet"),
          InlineKeyboardButton("🏅 المستوى", callback_data="menu_levels")],
+        [InlineKeyboardButton("🤖🔄 بوتي الشخصي", callback_data="menu_personal_bot")],
         [InlineKeyboardButton("🎮 الألعاب", callback_data="menu_games"),
          InlineKeyboardButton("🏆 المتصدرين", callback_data="menu_leaderboard")],
         [InlineKeyboardButton("📺 يوتيوب", callback_data="menu_youtube"),
@@ -2499,10 +2644,41 @@ def kb_cleanup():
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
+def kb_personal_bot(user_id):
+    """لوحة أزرار البوت الشخصي - ربط البوت بحساب المستخدم للرد التلقائي"""
+    pb = db.get_personal_bot(user_id)
+    linked = pb is not None
+    active = pb.get('is_active', 0) if pb else 0
+    auto_reply = pb.get('auto_reply_enabled', 0) if pb else 0
+    schedule = pb.get('schedule_enabled', 0) if pb else 0
+    rules = db.get_personal_bot_rules(user_id) if linked else []
+    buttons = []
+    if linked:
+        status = "✅ نشط" if active else "❌ متوقف"
+        buttons.append([InlineKeyboardButton(f"🔄 الحالة: {status}", callback_data="pb_toggle_active")])
+        buttons.append([InlineKeyboardButton(f"{'✅' if auto_reply else '❌'} الرد التلقائي", callback_data="pb_toggle_autoreply"),
+                        InlineKeyboardButton(f"{'✅' if schedule else '❌'} الجدولة", callback_data="pb_toggle_schedule")])
+        buttons.append([InlineKeyboardButton("➕ إضافة قاعدة رد", callback_data="pb_add_rule"),
+                        InlineKeyboardButton(f"📋 القواعد ({len(rules)})", callback_data="pb_rules")])
+        buttons.append([InlineKeyboardButton("📝 رسالة الغياب", callback_data="pb_away_msg"),
+                        InlineKeyboardButton("⏰ أوقات الجدولة", callback_data="pb_schedule")])
+        buttons.append([InlineKeyboardButton("📊 سجل الردود", callback_data="pb_log"),
+                        InlineKeyboardButton("🗑️ فصل البوت", callback_data="pb_unlink")])
+    else:
+        buttons.append([InlineKeyboardButton("🔗 ربط بوتي الشخصي", callback_data="pb_link")])
+    buttons.append([InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")])
+    return InlineKeyboardMarkup(buttons)
+
 def kb_owner():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 إعلان لكل المجموعات", callback_data="owner_broadcast"),
          InlineKeyboardButton("📊 إحصائيات عامة", callback_data="owner_stats")],
+        [InlineKeyboardButton("👑 إدارة المشرفين", callback_data="owner_manage_admins"),
+         InlineKeyboardButton("🔐 التحكم الكامل", callback_data="owner_full_control")],
+        [InlineKeyboardButton("🚫 حظر مستخدم عام", callback_data="owner_global_ban"),
+         InlineKeyboardButton("✅ فك حظر عام", callback_data="owner_global_unban")],
+        [InlineKeyboardButton("⚙️ إعادة تشغيل البوت", callback_data="owner_restart"),
+         InlineKeyboardButton("📊 سجل الأخطاء", callback_data="owner_errorlog")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -2689,6 +2865,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎫 <b>نظام تذاكر</b> للبلاغات والدعم الفني\n\n"
         "📺 <b>يوتيوب متقدم</b> رفع فيديوهات وتحليلات وجدولة\n"
         "📡 <b>شبكة بوتات متقدمة</b> إرسال وبث أوامر\n"
+        "🤖🔄 <b>بوت شخصي</b> ربط بوت بحسابك للرد التلقائي المجدول\n"
         "🧠 <b>مساعد ذكي AI</b> محادثة وترجمة وتلخيص\n"
         "🛡️ <b>حماية AI</b> كشف سبام ذكي وإشراف تلقائي\n"
         "🎤 <b>رسائل صوتية</b> معالجة وتحويل\n"
@@ -2816,10 +2993,346 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
             await safe_edit(query, "🧹 <b>أدوات التنظيف</b>:", reply_markup=kb_cleanup())
 
+        elif data == "menu_personal_bot":
+            pb = db.get_personal_bot(user_id)
+            if pb:
+                rules = db.get_personal_bot_rules(user_id)
+                active_rules = len([r for r in rules if r.get('is_active')])
+                status = "✅ نشط" if pb.get('is_active') else "❌ متوقف"
+                auto_status = "✅ مفعّل" if pb.get('auto_reply_enabled') else "❌ معطل"
+                sched_status = "✅ مفعّل" if pb.get('schedule_enabled') else "❌ معطل"
+                sched_info = f"{pb.get('schedule_start', '00:00')} - {pb.get('schedule_end', '23:59')}" if pb.get('schedule_enabled') else "غير محدد"
+                away_msg = pb.get('away_message', '') or 'غير محدد'
+                text = (
+                    f"🤖🔄 <b>بوتي الشخصي</b>\n\n"
+                    f"🔗 البوت: @{pb.get('bot_username', 'غير محدد')}\n"
+                    f"🔄 الحالة: {status}\n"
+                    f"💬 الرد التلقائي: {auto_status}\n"
+                    f"⏰ الجدولة: {sched_status}\n"
+                    f"🕐 أوقات العمل: {sched_info}\n"
+                    f"📝 رسالة الغياب: {away_msg}\n"
+                    f"📋 قواعد الرد: {active_rules}/{len(rules)}\n\n"
+                    f"💡 البوت الشخصي يرد تلقائياً على الرسائل\n"
+                    f"التي تصل لحسابك حسب القواعد والجدولة"
+                )
+            else:
+                text = (
+                    "🤖🔄 <b>بوتي الشخصي</b>\n\n"
+                    "🔗 اربط بوتك بحسابك الشخصي للرد التلقائي!\n\n"
+                    "✨ <b>المميزات:</b>\n"
+                    "• رد تلقائي على الرسائل المحددة بقواعد ذكية\n"
+                    "• جدولة أوقات العمل (مثلاً: من 8 صباحاً لـ 5 مساءً)\n"
+                    "• رسالة غياب مخصصة\n"
+                    "• قواعد مرنة: كلمات مفتاحية، تعابير، تكرار\n"
+                    "• سجل كامل لجميع الردود التلقائية\n\n"
+                    "👇 اضغط الزر أدناه للبدء:"
+                )
+            await safe_edit(query, text, reply_markup=kb_personal_bot(user_id))
+
+        # ═══ ربط البوت الشخصي ═══
+        elif data == "pb_link":
+            context.user_data["waiting"] = "pb_link_bot"
+            await safe_edit(query,
+                "🔗 <b>ربط البوت الشخصي</b>\n\n"
+                "أرسل بيانات البوت بالصيغة التالية:\n"
+                "<code>اسم_البوت | توكن_البوت | رسالة_الغياب</code>\n\n"
+                "💡 مثال:\n"
+                "<code>MyAutoBot | 123456:ABC-DEF | أنا مشغول حالياً، سأرد لاحقاً</code>\n\n"
+                "⚠️ رسالة الغياب اختيارية\n"
+                "📌 يمكنك إرسال: <code>اسم_البوت | توكن_البوت</code> فقط",
+                reply_markup=kb_back_cancel())
+
+        elif data == "pb_unlink":
+            db.unlink_personal_bot(user_id)
+            await safe_edit(query, "🗑️ <b>تم فصل البوت الشخصي</b>\n\nتم حذف جميع القواعد والإعدادات ✅", reply_markup=kb_personal_bot(user_id))
+
+        elif data == "pb_toggle_active":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ لا يوجد بوت مربوط!", show_alert=True); return
+            new_val = 0 if pb.get('is_active') else 1
+            db.update_personal_bot(user_id, is_active=new_val)
+            status = "✅ نشط" if new_val else "❌ متوقف"
+            await safe_answer(query, f"🔄 البوت الشخصي: {status}", show_alert=True)
+            pb['is_active'] = new_val
+            rules = db.get_personal_bot_rules(user_id)
+            active_rules = len([r for r in rules if r.get('is_active')])
+            auto_status = "✅ مفعّل" if pb.get('auto_reply_enabled') else "❌ معطل"
+            sched_status = "✅ مفعّل" if pb.get('schedule_enabled') else "❌ معطل"
+            sched_info = f"{pb.get('schedule_start', '00:00')} - {pb.get('schedule_end', '23:59')}" if pb.get('schedule_enabled') else "غير محدد"
+            away_msg = pb.get('away_message', '') or 'غير محدد'
+            text = (
+                f"🤖🔄 <b>بوتي الشخصي</b>\n\n"
+                f"🔗 البوت: @{pb.get('bot_username', 'غير محدد')}\n"
+                f"🔄 الحالة: {status}\n"
+                f"💬 الرد التلقائي: {auto_status}\n"
+                f"⏰ الجدولة: {sched_status}\n"
+                f"🕐 أوقات العمل: {sched_info}\n"
+                f"📝 رسالة الغياب: {away_msg}\n"
+                f"📋 قواعد الرد: {active_rules}/{len(rules)}\n\n"
+                f"💡 البوت الشخصي يرد تلقائياً على الرسائل"
+            )
+            await safe_edit(query, text, reply_markup=kb_personal_bot(user_id))
+
+        elif data == "pb_toggle_autoreply":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ لا يوجد بوت مربوط!", show_alert=True); return
+            new_val = 0 if pb.get('auto_reply_enabled') else 1
+            db.update_personal_bot(user_id, auto_reply_enabled=new_val)
+            status = "✅ مفعّل" if new_val else "❌ معطل"
+            await safe_answer(query, f"💬 الرد التلقائي: {status}")
+            # Refresh display
+            await query.message.edit_reply_markup(reply_markup=kb_personal_bot(user_id))
+
+        elif data == "pb_toggle_schedule":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ لا يوجد بوت مربوط!", show_alert=True); return
+            new_val = 0 if pb.get('schedule_enabled') else 1
+            db.update_personal_bot(user_id, schedule_enabled=new_val)
+            status = "✅ مفعّل" if new_val else "❌ معطل"
+            await safe_answer(query, f"⏰ الجدولة: {status}")
+            await query.message.edit_reply_markup(reply_markup=kb_personal_bot(user_id))
+
+        elif data == "pb_add_rule":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ اربط البوت أولاً!", show_alert=True); return
+            context.user_data["waiting"] = "pb_rule_trigger"
+            await safe_edit(query,
+                "➕ <b>إضافة قاعدة رد تلقائي</b>\n\n"
+                "أرسل القاعدة بالصيغة التالية:\n"
+                "<code>الكلمة_المفتاحية | الرد_التلقائي</code>\n\n"
+                "💡 مثال:\n"
+                "<code>مرحبا | أهلاً! صاحب الحساب مشغول حالياً 🌟</code>\n\n"
+                "📌 أنواع المطابقة:\n"
+                "• الكلمة داخل الرسالة ← يحتوي\n"
+                "• مطابقة تامة ← ابدأ بكلمة <code>exact:</code>\n"
+                "• تعبير نمطي ← ابدأ بكلمة <code>regex:</code>\n\n"
+                "مثال مطابقة تامة: <code>exact:كيف حالك | الحمد لله!</code>",
+                reply_markup=kb_back_cancel())
+
+        elif data == "pb_rules":
+            rules = db.get_personal_bot_rules(user_id, active_only=False)
+            if not rules:
+                await safe_answer(query, "📋 لا توجد قواعد! أضف قاعدة أولاً", show_alert=True); return
+            text = "📋 <b>قواعد الرد التلقائي:</b>\n\n"
+            for r in rules:
+                status = "✅" if r.get('is_active') else "❌"
+                match = {"contains": "يحتوي", "exact": "تام", "regex": "نمطي"}.get(r.get('match_mode', 'contains'), "يحتوي")
+                trigger_short = r['trigger_value'][:30] + '...' if len(r['trigger_value']) > 30 else r['trigger_value']
+                reply_short = r['reply_text'][:40] + '...' if len(r['reply_text']) > 40 else r['reply_text']
+                text += f"{status} #{r['id']} <b>{trigger_short}</b> ({match}) → {reply_short}\n"
+            buttons = []
+            for r in rules:
+                btn_status = "✅" if r.get('is_active') else "❌"
+                buttons.append([InlineKeyboardButton(
+                    f"{btn_status} #{r['id']} {r['trigger_value'][:20]}",
+                    callback_data=f"pb_rule_{r['id']}")])
+            buttons.append([InlineKeyboardButton("🔙 البوت الشخصي", callback_data="menu_personal_bot")])
+            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+        elif data.startswith("pb_rule_"):
+            rule_id = int(data.split("_")[-1])
+            rules = db.get_personal_bot_rules(user_id, active_only=False)
+            rule = next((r for r in rules if r['id'] == rule_id), None)
+            if not rule:
+                await safe_answer(query, "❌ القاعدة غير موجودة!", show_alert=True); return
+            match = {"contains": "يحتوي", "exact": "تام", "regex": "نمطي"}.get(rule.get('match_mode', 'contains'), "يحتوي")
+            status = "✅ نشطة" if rule.get('is_active') else "❌ معطلة"
+            text = (
+                f"📋 <b>تفاصيل القاعدة #{rule_id}</b>\n\n"
+                f"🔤 المُحفّز: {html_escape(rule['trigger_value'])}\n"
+                f"📝 الرد: {html_escape(rule['reply_text'])}\n"
+                f"🔀 نوع المطابقة: {match}\n"
+                f"📊 الحالة: {status}\n"
+                f"⭐ الأولوية: {rule.get('priority', 0)}"
+            )
+            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 تفعيل/تعطيل", callback_data=f"pb_togglerule_{rule_id}"),
+                 InlineKeyboardButton("🗑️ حذف", callback_data=f"pb_delrule_{rule_id}")],
+                [InlineKeyboardButton("🔙 القواعد", callback_data="pb_rules")]
+            ]))
+
+        elif data.startswith("pb_togglerule_"):
+            rule_id = int(data.split("_")[-1])
+            new_val = db.toggle_personal_bot_rule(rule_id, user_id)
+            if new_val is not None:
+                status = "✅ مفعّلة" if new_val else "❌ معطلة"
+                await safe_answer(query, f"القاعدة #{rule_id}: {status}")
+            else:
+                await safe_answer(query, "❌ القاعدة غير موجودة!", show_alert=True)
+            # Refresh
+            rules = db.get_personal_bot_rules(user_id, active_only=False)
+            text = "📋 <b>قواعد الرد التلقائي:</b>\n\n"
+            for r in rules:
+                rs = "✅" if r.get('is_active') else "❌"
+                match = {"contains": "يحتوي", "exact": "تام", "regex": "نمطي"}.get(r.get('match_mode', 'contains'), "يحتوي")
+                trigger_short = r['trigger_value'][:30] + '...' if len(r['trigger_value']) > 30 else r['trigger_value']
+                reply_short = r['reply_text'][:40] + '...' if len(r['reply_text']) > 40 else r['reply_text']
+                text += f"{rs} #{r['id']} <b>{trigger_short}</b> ({match}) → {reply_short}\n"
+            buttons = []
+            for r in rules:
+                btn_status = "✅" if r.get('is_active') else "❌"
+                buttons.append([InlineKeyboardButton(
+                    f"{btn_status} #{r['id']} {r['trigger_value'][:20]}",
+                    callback_data=f"pb_rule_{r['id']}")])
+            buttons.append([InlineKeyboardButton("🔙 البوت الشخصي", callback_data="menu_personal_bot")])
+            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+        elif data.startswith("pb_delrule_"):
+            rule_id = int(data.split("_")[-1])
+            if db.delete_personal_bot_rule(rule_id, user_id):
+                await safe_answer(query, f"🗑️ تم حذف القاعدة #{rule_id}")
+            else:
+                await safe_answer(query, "❌ القاعدة غير موجودة!", show_alert=True)
+            # Refresh
+            rules = db.get_personal_bot_rules(user_id, active_only=False)
+            if rules:
+                text = "📋 <b>قواعد الرد التلقائي:</b>\n\n"
+                for r in rules:
+                    rs = "✅" if r.get('is_active') else "❌"
+                    match = {"contains": "يحتوي", "exact": "تام", "regex": "نمطي"}.get(r.get('match_mode', 'contains'), "يحتوي")
+                    trigger_short = r['trigger_value'][:30] + '...' if len(r['trigger_value']) > 30 else r['trigger_value']
+                    reply_short = r['reply_text'][:40] + '...' if len(r['reply_text']) > 40 else r['reply_text']
+                    text += f"{rs} #{r['id']} <b>{trigger_short}</b> ({match}) → {reply_short}\n"
+                buttons = []
+                for r in rules:
+                    btn_status = "✅" if r.get('is_active') else "❌"
+                    buttons.append([InlineKeyboardButton(
+                        f"{btn_status} #{r['id']} {r['trigger_value'][:20]}",
+                        callback_data=f"pb_rule_{r['id']}")])
+                buttons.append([InlineKeyboardButton("🔙 البوت الشخصي", callback_data="menu_personal_bot")])
+                await safe_edit(query, text, reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                await safe_edit(query, "📋 لا توجد قواعد بعد", reply_markup=kb_personal_bot(user_id))
+
+        elif data == "pb_away_msg":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ اربط البوت أولاً!", show_alert=True); return
+            current = pb.get('away_message', '') or 'غير محدد'
+            context.user_data["waiting"] = "pb_away_msg"
+            await safe_edit(query,
+                f"📝 <b>رسالة الغياب</b>\n\n"
+                f"الرسالة الحالية: {current}\n\n"
+                f"اكتب رسالة الغياب الجديدة:\n"
+                f"💡 هذه الرسالة تُرسل تلقائياً عندما يصلك أي رسالة\n"
+                f"ولا تتطابق مع أي قاعدة محددة",
+                reply_markup=kb_back_cancel())
+
+        elif data == "pb_schedule":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await safe_answer(query, "❌ اربط البوت أولاً!", show_alert=True); return
+            current_start = pb.get('schedule_start', '00:00')
+            current_end = pb.get('schedule_end', '23:59')
+            current_days = pb.get('schedule_days', '0,1,2,3,4,5,6')
+            day_names = {"0": "الأحد", "1": "الإثنين", "2": "الثلاثاء", "3": "الأربعاء", "4": "الخميس", "5": "الجمعة", "6": "السبت"}
+            days_text = ", ".join([day_names.get(d, d) for d in current_days.split(",")])
+            context.user_data["waiting"] = "pb_schedule"
+            await safe_edit(query,
+                f"⏰ <b>أوقات الجدولة</b>\n\n"
+                f"🕐 الوقت الحالي: {current_start} - {current_end}\n"
+                f"📅 الأيام: {days_text}\n\n"
+                f"أرسل الأوقات الجديدة بالصيغة:\n"
+                f"<code>ساعة_البداية:دقيقة | ساعة_النهاية:دقيقة | أيام_الأسبوع</code>\n\n"
+                f"💡 مثال:\n"
+                f"<code>08:00 | 17:00 | 0,1,2,3,4</code>\n"
+                f"← من 8 صباحاً لـ 5 مساءً، من الأحد للخميس\n\n"
+                f"📌 الأيام: 0=أحد 1=إثنين 2=ثلاثاء 3=أربعاء 4=خميس 5=جمعة 6=سبت",
+                reply_markup=kb_back_cancel())
+
+        elif data == "pb_log":
+            logs = db.get_personal_bot_log(user_id, limit=15)
+            if not logs:
+                await safe_answer(query, "📊 لا يوجد سجل بعد", show_alert=True); return
+            text = "📊 <b>سجل ردود البوت الشخصي:</b>\n\n"
+            for log in logs[:15]:
+                trigger_short = (log.get('trigger_message', '')[:25] + '...') if len(log.get('trigger_message', '')) > 25 else log.get('trigger_message', '')
+                reply_short = (log.get('sent_reply', '')[:25] + '...') if len(log.get('sent_reply', '')) > 25 else log.get('sent_reply', '')
+                text += f"• {trigger_short} → {reply_short}\n  📅 {log.get('replied_at', '')[:16]}\n\n"
+            await safe_edit(query, text, reply_markup=kb_personal_bot(user_id))
+
         elif data == "menu_owner":
             if not is_owner:
                 await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
-            await safe_edit(query, "👑 <b>أدوات المالك</b>:", reply_markup=kb_owner())
+            group_ids = db.get_all_group_ids()
+            text = (
+                "👑 <b>لوحة تحكم المالك</b>\n\n"
+                f"📁 المجموعات: {len(group_ids)}\n"
+                f"🆔 معرفك: <code>{OWNER_ID}</code>\n"
+                "🔐 الصلاحية: <b>مطلقة</b>\n\n"
+                "⚡ أنت المتحكم الوحيد في البوت\n"
+                "جميع الأوامر والمميزات تحت سيطرتك الكاملة"
+            )
+            await safe_edit(query, text, reply_markup=kb_owner())
+
+        # ═══ أوامر المالك الجديدة ═══
+        elif data == "owner_manage_admins":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            context.user_data["waiting"] = "owner_admin_action"
+            await safe_edit(query,
+                "👑 <b>إدارة المشرفين</b>\n\n"
+                "أرسل الأمر بالصيغة:\n"
+                "<code>ترقية | معرف_المستخدم</code>\n"
+                "<code>تخفيض | معرف_المستخدم</code>\n\n"
+                "💡 مثال: <code>ترقية | 123456789</code>",
+                reply_markup=kb_back_cancel())
+
+        elif data == "owner_full_control":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            group_ids = db.get_all_group_ids()
+            text = (
+                "🔐 <b>التحكم الكامل</b>\n\n"
+                f"📁 المجموعات المسجلة: {len(group_ids)}\n"
+                f"🆔 معرف المالك: <code>{OWNER_ID}</code>\n\n"
+                "⚡ صلاحياتك كمالك:\n"
+                "• إدارة كاملة لجميع المجموعات\n"
+                "• حظر/فك حظر عام\n"
+                "• بث رسائل لكل المجموعات\n"
+                "• إعادة تشغيل البوت\n"
+                "• التحكم في إعدادات أي مجموعة\n"
+                "• تعيين/إزالة مشرفين\n"
+                "• الوصول لجميع السجلات\n"
+                "• إلغاء أي إجراء\n\n"
+                "👑 أنت المتحكم الأوحد في البوت"
+            )
+            await safe_edit(query, text, reply_markup=kb_owner())
+
+        elif data == "owner_global_ban":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            context.user_data["waiting"] = "owner_global_ban"
+            await safe_edit(query,
+                "🚫 <b>حظر مستخدم من كل المجموعات</b>\n\n"
+                "أرسل معرف المستخدم (رقم):",
+                reply_markup=kb_back_cancel())
+
+        elif data == "owner_global_unban":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            context.user_data["waiting"] = "owner_global_unban"
+            await safe_edit(query,
+                "✅ <b>فك حظر مستخدم من كل المجموعات</b>\n\n"
+                "أرسل معرف المستخدم (رقم):",
+                reply_markup=kb_back_cancel())
+
+        elif data == "owner_restart":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            await safe_edit(query, "⚙️ <b>جاري إعادة تشغيل البوت...</b>\n\n⏳ يرجى الانتظار 10 ثوانٍ")
+            import os
+            os._exit(0)
+
+        elif data == "owner_errorlog":
+            if not is_owner:
+                await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
+            text = "📊 <b>سجل الأخطاء</b>\n\n💡 البوت يعمل بشكل طبيعي ✅"
+            await safe_edit(query, text, reply_markup=kb_owner())
 
         # ═══ شبكة البوتات ═══
         elif data == "menu_botnet":
@@ -4721,6 +5234,199 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(f"📢 تم إرسال الإعلان إلى {sent}/{len(group_ids)} مجموعة ✅")
             context.user_data.pop("waiting", None); return
 
+        # ═══ أوامر المالك الجديدة ═══
+        elif waiting == "owner_admin_action":
+            if user_id != OWNER_ID:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                action, target_str = text.split("|", 1)
+                action = action.strip()
+                try:
+                    target_uid = int(target_str.strip())
+                except ValueError:
+                    await msg.reply_text("❌ المعرف يجب أن يكون رقماً")
+                    context.user_data.pop("waiting", None); return
+                if action == "ترقية":
+                    try:
+                        # البحث في كل المجموعات وترقية المستخدم
+                        promoted = 0
+                        for gid in db.get_all_group_ids():
+                            try:
+                                await context.bot.promote_chat_member(gid, target_uid,
+                                    can_manage_chat=True, can_delete_messages=True,
+                                    can_restrict_members=True, can_invite_users=True, can_pin_messages=True)
+                                promoted += 1
+                            except: pass
+                        await msg.reply_text(f"👑 تم ترقية المستخدم {target_uid} في {promoted} مجموعة ✅", parse_mode="HTML")
+                    except Exception as e:
+                        await msg.reply_text(f"❌ خطأ: {e}")
+                elif action == "تخفيض":
+                    try:
+                        demoted = 0
+                        for gid in db.get_all_group_ids():
+                            try:
+                                await context.bot.promote_chat_member(gid, target_uid,
+                                    can_manage_chat=False, can_delete_messages=False,
+                                    can_restrict_members=False, can_invite_users=False, can_pin_messages=False)
+                                demoted += 1
+                            except: pass
+                        await msg.reply_text(f"📉 تم تخفيض المستخدم {target_uid} في {demoted} مجموعة ✅", parse_mode="HTML")
+                    except Exception as e:
+                        await msg.reply_text(f"❌ خطأ: {e}")
+                else:
+                    await msg.reply_text("❌ استخدم: ترقية | معرف  أو  تخفيض | معرف")
+            else:
+                await msg.reply_text("❌ الصيغة: ترقية | معرف_المستخدم")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "owner_global_ban":
+            if user_id != OWNER_ID:
+                context.user_data.pop("waiting", None); return
+            try:
+                ban_uid = int(text.strip())
+            except ValueError:
+                await msg.reply_text("❌ المعرف يجب أن يكون رقماً")
+                context.user_data.pop("waiting", None); return
+            banned = 0
+            for gid in db.get_all_group_ids():
+                try:
+                    await context.bot.ban_chat_member(gid, ban_uid)
+                    banned += 1
+                except: pass
+            await msg.reply_text(f"🚫 تم حظر المستخدم {ban_uid} من {banned} مجموعة ✅", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "owner_global_unban":
+            if user_id != OWNER_ID:
+                context.user_data.pop("waiting", None); return
+            try:
+                unban_uid = int(text.strip())
+            except ValueError:
+                await msg.reply_text("❌ المعرف يجب أن يكون رقماً")
+                context.user_data.pop("waiting", None); return
+            unbanned = 0
+            for gid in db.get_all_group_ids():
+                try:
+                    await context.bot.unban_chat_member(gid, unban_uid)
+                    unbanned += 1
+                except: pass
+            await msg.reply_text(f"✅ تم فك حظر المستخدم {unban_uid} من {unbanned} مجموعة ✅", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ البوت الشخصي - معالجات الانتظار ═══
+        elif waiting == "pb_link_bot":
+            if "|" in text:
+                parts = text.split("|")
+                bot_username = parts[0].strip().replace("@", "")
+                bot_token = parts[1].strip() if len(parts) > 1 else ""
+                away_msg = parts[2].strip() if len(parts) > 2 else "أنا مشغول حالياً، سأرد لاحقاً 📵"
+                if not bot_token:
+                    await msg.reply_text("❌ يجب إدخال توكن البوت!")
+                    context.user_data.pop("waiting", None); return
+                db.link_personal_bot(user_id, bot_username, bot_token, away_msg)
+                await msg.reply_text(
+                    f"🤖🔄 <b>تم ربط البوت الشخصي بنجاح!</b>\n\n"
+                    f"🔗 البوت: @{bot_username}\n"
+                    f"📝 رسالة الغياب: {away_msg}\n\n"
+                    f"✅ الرد التلقائي مفعّل\n"
+                    f"💡 أضف قواعد رد من زر '➕ إضافة قاعدة رد'",
+                    parse_mode="HTML")
+            else:
+                await msg.reply_text("❌ الصيغة: اسم_البوت | توكن_البوت | رسالة_الغياب")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "pb_rule_trigger":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await msg.reply_text("❌ اربط البوت أولاً!")
+                context.user_data.pop("waiting", None); return
+            # Parse the rule
+            match_mode = 'contains'
+            trigger = text
+            if text.startswith("exact:"):
+                match_mode = 'exact'
+                trigger = text[6:].strip()
+            elif text.startswith("regex:"):
+                match_mode = 'regex'
+                trigger = text[6:].strip()
+            # Save trigger temporarily and ask for reply
+            context.user_data["pb_trigger"] = trigger
+            context.user_data["pb_match_mode"] = match_mode
+            context.user_data["waiting"] = "pb_rule_reply"
+            await msg.reply_text(
+                f"📝 <b>تم حفظ المُحفّز:</b> {html_escape(trigger)}\n"
+                f"🔀 نوع المطابقة: {match_mode}\n\n"
+                f"الآن اكتب الرد التلقائي:",
+                parse_mode="HTML")
+            return
+
+        elif waiting == "pb_rule_reply":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await msg.reply_text("❌ اربط البوت أولاً!")
+                context.user_data.pop("waiting", None); return
+            trigger = context.user_data.get("pb_trigger", "")
+            match_mode = context.user_data.get("pb_match_mode", "contains")
+            if not trigger:
+                await msg.reply_text("❌ خطأ: لم يتم حفظ المُحفّز")
+                context.user_data.pop("waiting", None); return
+            rule_id = db.add_personal_bot_rule(user_id, 'keyword', trigger, text, match_mode)
+            match_name = {"contains": "يحتوي", "exact": "تام", "regex": "نمطي"}.get(match_mode, "يحتوي")
+            await msg.reply_text(
+                f"✅ <b>تم إضافة قاعدة الرد التلقائي!</b>\n\n"
+                f"🔤 المُحفّز: {html_escape(trigger)}\n"
+                f"📝 الرد: {html_escape(text)}\n"
+                f"🔀 المطابقة: {match_name}\n"
+                f"📋 رقم القاعدة: #{rule_id}",
+                parse_mode="HTML")
+            context.user_data.pop("waiting", None)
+            context.user_data.pop("pb_trigger", None)
+            context.user_data.pop("pb_match_mode", None)
+            return
+
+        elif waiting == "pb_away_msg":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await msg.reply_text("❌ اربط البوت أولاً!")
+                context.user_data.pop("waiting", None); return
+            db.update_personal_bot(user_id, away_message=text)
+            await msg.reply_text(
+                f"📝 <b>تم تحديث رسالة الغياب!</b>\n\n"
+                f"الرسالة الجديدة: {text}",
+                parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "pb_schedule":
+            pb = db.get_personal_bot(user_id)
+            if not pb:
+                await msg.reply_text("❌ اربط البوت أولاً!")
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|")
+                start_time = parts[0].strip() if len(parts) > 0 else "00:00"
+                end_time = parts[1].strip() if len(parts) > 1 else "23:59"
+                days = parts[2].strip() if len(parts) > 2 else "0,1,2,3,4,5,6"
+                # Validate times
+                try:
+                    sh, sm = start_time.split(":")
+                    eh, em = end_time.split(":")
+                    int(sh); int(sm); int(eh); int(em)
+                except:
+                    await msg.reply_text("❌ صيغة الوقت غير صحيحة! استخدم: HH:MM")
+                    context.user_data.pop("waiting", None); return
+                db.update_personal_bot(user_id, schedule_start=start_time, schedule_end=end_time, schedule_days=days, schedule_enabled=1)
+                day_names = {"0": "الأحد", "1": "الإثنين", "2": "الثلاثاء", "3": "الأربعاء", "4": "الخميس", "5": "الجمعة", "6": "السبت"}
+                days_text = ", ".join([day_names.get(d, d) for d in days.split(",")])
+                await msg.reply_text(
+                    f"⏰ <b>تم تحديث الجدولة!</b>\n\n"
+                    f"🕐 من: {start_time} إلى: {end_time}\n"
+                    f"📅 الأيام: {days_text}\n"
+                    f"✅ الجدولة مفعّلة",
+                    parse_mode="HTML")
+            else:
+                await msg.reply_text("❌ الصيغة: ساعة_البداية:دقيقة | ساعة_النهاية:دقيقة | أيام")
+            context.user_data.pop("waiting", None); return
+
         # إرسال رسالة لعضو
         elif waiting == "send":
             if not is_adm:
@@ -5499,6 +6205,105 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(reply_t)
             replied = True
             break
+
+    # ═══ البوت الشخصي - رد تلقائي للرسائل الخاصة ═══
+    # إذا كانت الرسالة في خاص البوت، تحقق من البوت الشخصي للمرسل إليه
+    if chat.type == "private" and not user.is_bot:
+        # في الخاص، تحقق من البوت الشخصي للمستخدم نفسه
+        pb = db.get_personal_bot(user_id)
+        if pb and pb.get('is_active') and pb.get('auto_reply_enabled'):
+            # تحقق من الجدولة
+            should_reply = True
+            if pb.get('schedule_enabled'):
+                now = datetime.now()
+                current_time = now.strftime("%H:%M")
+                current_day = str(now.weekday())  # 0=Monday, 6=Sunday
+                # Convert to our format: 0=Sunday
+                current_day_our = str((now.weekday() + 1) % 7)
+                start_time = pb.get('schedule_start', '00:00')
+                end_time = pb.get('schedule_end', '23:59')
+                days = pb.get('schedule_days', '0,1,2,3,4,5,6')
+                if current_day_our not in days.split(','):
+                    should_reply = False
+                elif current_time < start_time or current_time > end_time:
+                    should_reply = False
+            
+            if should_reply and text:
+                # تحقق من القواعد
+                rules = db.get_personal_bot_rules(user_id)
+                rule_matched = False
+                for rule in rules:
+                    trigger_val = rule.get('trigger_value', '')
+                    match_mode = rule.get('match_mode', 'contains')
+                    if match_mode == 'exact' and text.strip() == trigger_val.strip():
+                        await msg.reply_text(rule['reply_text'])
+                        db.log_personal_bot_reply(user_id, chat.id, text, rule['reply_text'])
+                        rule_matched = True
+                        break
+                    elif match_mode == 'contains' and trigger_val.lower() in text.lower():
+                        await msg.reply_text(rule['reply_text'])
+                        db.log_personal_bot_reply(user_id, chat.id, text, rule['reply_text'])
+                        rule_matched = True
+                        break
+                    elif match_mode == 'regex':
+                        try:
+                            if re.search(trigger_val, text, re.IGNORECASE):
+                                await msg.reply_text(rule['reply_text'])
+                                db.log_personal_bot_reply(user_id, chat.id, text, rule['reply_text'])
+                                rule_matched = True
+                                break
+                        except: pass
+                
+                # إذا لم تتطابق أي قاعدة، أرسل رسالة الغياب
+                if not rule_matched and pb.get('away_message'):
+                    await msg.reply_text(pb['away_message'])
+                    db.log_personal_bot_reply(user_id, chat.id, text, pb['away_message'])
+
+    # ═══ البوت الشخصي - رد تلقائي في المجموعة ═══
+    # إذا تم ذكر مستخدم لديه بوت شخصي، يرد تلقائياً
+    if chat.type != "private" and not user.is_bot:
+        # تحقق إذا كان هناك رد على رسالة مستخدم لديه بوت شخصي
+        if target and target.from_user and not target.from_user.is_bot:
+            target_uid = target.from_user.id
+            pb_target = db.get_personal_bot(target_uid)
+            if pb_target and pb_target.get('is_active') and pb_target.get('auto_reply_enabled') and text:
+                should_reply = True
+                if pb_target.get('schedule_enabled'):
+                    now = datetime.now()
+                    current_time = now.strftime("%H:%M")
+                    current_day_our = str((now.weekday() + 1) % 7)
+                    start_time = pb_target.get('schedule_start', '00:00')
+                    end_time = pb_target.get('schedule_end', '23:59')
+                    days = pb_target.get('schedule_days', '0,1,2,3,4,5,6')
+                    if current_day_our not in days.split(','):
+                        should_reply = False
+                    elif current_time < start_time or current_time > end_time:
+                        should_reply = False
+                
+                if should_reply:
+                    rules = db.get_personal_bot_rules(target_uid)
+                    rule_matched = False
+                    for rule in rules:
+                        trigger_val = rule.get('trigger_value', '')
+                        match_mode = rule.get('match_mode', 'contains')
+                        if match_mode == 'exact' and text.strip() == trigger_val.strip():
+                            await msg.reply_text(f"🤖 <b>رد تلقائي</b> عن {mention(target_uid, target.from_user.first_name)}:\n\n{rule['reply_text']}", parse_mode="HTML")
+                            db.log_personal_bot_reply(target_uid, chat.id, text, rule['reply_text'])
+                            rule_matched = True
+                            break
+                        elif match_mode == 'contains' and trigger_val.lower() in text.lower():
+                            await msg.reply_text(f"🤖 <b>رد تلقائي</b> عن {mention(target_uid, target.from_user.first_name)}:\n\n{rule['reply_text']}", parse_mode="HTML")
+                            db.log_personal_bot_reply(target_uid, chat.id, text, rule['reply_text'])
+                            rule_matched = True
+                            break
+                        elif match_mode == 'regex':
+                            try:
+                                if re.search(trigger_val, text, re.IGNORECASE):
+                                    await msg.reply_text(f"🤖 <b>رد تلقائي</b> عن {mention(target_uid, target.from_user.first_name)}:\n\n{rule['reply_text']}", parse_mode="HTML")
+                                    db.log_personal_bot_reply(target_uid, chat.id, text, rule['reply_text'])
+                                    rule_matched = True
+                                    break
+                            except: pass
 
     # رد الذكاء الاصطناعي المدمج
     if not replied and settings.get('ai_reply', 0) and not user.is_bot:

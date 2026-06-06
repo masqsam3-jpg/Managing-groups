@@ -39,12 +39,20 @@ logger = logging.getLogger(__name__)
 # الإعدادات العامة
 # ═════════════════════════════════════════════════════════════════
 TOKEN = os.environ.get("TOKEN", "")
-OWNER_ID = 8947599931
+OWNER_ID = int(os.environ.get("OWNER_ID", "8947599931"))
 WARN_LIMIT = 3
 DEFAULT_WELCOME = "مرحباً بك يا {user} في مجموعتنا! 🎉\nيرجى قراءة القوانين"
 DB_PATH = "bot_database.db"
 
 SUDO_USERS = {OWNER_ID}
+
+# ═══ فحص المتغيرات الحرجة عند البدء ═══
+if not TOKEN:
+    logger.critical("❌❌❌ متغير البيئة TOKEN غير موجود! البوت لن يعمل!")
+    logger.critical("📌 اذهب إلى Render Dashboard → Environment → أضف TOKEN = توكن_البوت_الخاص_بك")
+else:
+    logger.info(f"✅ TOKEN موجود (الطول: {len(TOKEN)} حرف)")
+    logger.info(f"✅ OWNER_ID: {OWNER_ID}")
 
 # ═════════════════════════════════════════════════════════════════
 # خادم Flask للحفاظ على البوت نشطاً
@@ -53,11 +61,35 @@ web_app = Flask(__name__)
 
 @web_app.route('/')
 def health_check():
-    return jsonify({"status": "running", "bot": "Group Manager v7.0", "uptime": True}), 200
+    return jsonify({
+        "status": "running",
+        "bot": "Group Manager v7.1",
+        "token_set": bool(TOKEN),
+        "owner_id": OWNER_ID,
+        "uptime": True
+    }), 200
 
 @web_app.route('/health')
 def health():
     return "OK", 200
+
+@web_app.route('/status')
+def status():
+    """مسار لفحص حالة البوت - يظهر ما إذا كان TOKEN موجوداً أم لا"""
+    if TOKEN:
+        return jsonify({
+            "status": "healthy",
+            "token": "موجود ✅",
+            "token_length": len(TOKEN),
+            "owner_id": OWNER_ID,
+            "message": "البوت يعمل بشكل طبيعي"
+        }), 200
+    else:
+        return jsonify({
+            "status": "unhealthy",
+            "token": "غير موجود ❌",
+            "message": "⚠️ متغير البيئة TOKEN غير محدد! اذهب إلى Render Dashboard → Environment → أضف TOKEN"
+        }), 500
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))

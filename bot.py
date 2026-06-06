@@ -61,11 +61,20 @@ logger = logging.getLogger(__name__)
 # ═════════════════════════════════════════════════════════════════
 TOKEN = os.environ.get("TOKEN", "")
 OWNER_ID = int(os.environ.get("OWNER_ID", "8947599931"))
+RENDER_APP_URL = os.environ.get("RENDER_APP_URL", "")  # رابط التطبيق على Render
 WARN_LIMIT = 3
 DEFAULT_WELCOME = "مرحباً بك يا {user} في مجموعتنا! 🎉\nيرجى قراءة القوانين"
 DB_PATH = "bot_database.db"
 
 SUDO_USERS = {OWNER_ID}
+
+# ═══ متغيرات مراقبة التشغيل المستمر ═══
+BOT_START_TIME = time.time()
+POLLING_ALIVE = threading.Event()
+POLLING_ALIVE.set()  # يُوضع عند عمل polling ويُزال عند التوقف
+HEALTH_CHECK_PASSED = threading.Event()
+HEALTH_CHECK_PASSED.set()
+_last_polling_heartbeat = time.time()
 
 # ═══ نظام القفل الأحادي لمنع تكرار البوت ═══
 LOCK_FILE = "/tmp/bot_singleton.lock"
@@ -75,6 +84,24 @@ def acquire_singleton_lock():
     """الحصول على قفل ملف لمنع تشغيل عدة مثيلات من البوت"""
     global _lock_file
     try:
+        # محاولة إزالة القفل القديم إذا كانت العملية السابقة ماتت
+        if os.path.exists(LOCK_FILE):
+            try:
+                with open(LOCK_FILE, 'r') as f:
+                    old_pid = f.read().strip()
+                if old_pid:
+                    # تحقق إذا كانت العملية القديمة لا تزال حية
+                    try:
+                        os.kill(int(old_pid), 0)  # لا يرسل إشارة، فقط يتحقق
+                    except (OSError, ProcessLookupError):
+                        # العملية القديمة ماتت - يمكننا إزالة القفل
+                        try:
+                            os.remove(LOCK_FILE)
+                            logger.info(f"✅ تم إزالة قفل العملية الميتة (PID: {old_pid})")
+                        except:
+                            pass
+            except:
+                pass
         _lock_file = open(LOCK_FILE, 'w')
         fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         _lock_file.write(str(os.getpid()))
@@ -111,7 +138,7 @@ else:
     logger.info(f"✅ OWNER_ID: {OWNER_ID}")
 
 # ═════════════════════════════════════════════════════════════════
-# خادم Flask للحفاظ على البوت نشطاً
+# خادم Flask للحفاظ على البوت نشطاً 24/7
 # ═════════════════════════════════════════════════════════════════
 web_app = Flask(__name__)
 
@@ -119,37 +146,121 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v13.0",
+        "bot": "Group Manager v14.0 - 24/7",
         "token_set": bool(TOKEN),
-        "uptime": True
+        "uptime_seconds": int(time.time() - BOT_START_TIME),
+        "polling_alive": POLLING_ALIVE.is_set(),
+        "pid": os.getpid()
     }), 200
 
 @web_app.route('/health')
 def health():
-    return "OK", 200
+    """فحص صحي شامل - يُستخدم من Render و UptimeRobot"""
+    uptime = int(time.time() - BOT_START_TIME)
+    polling_ok = POLLING_ALIVE.is_set()
+    # تحقق من نبض polling (إذا لم يحدث خلال 120 ثانية = مشكلة)
+    heartbeat_ok = (time.time() - _last_polling_heartbeat) < 120
+    
+    if TOKEN and polling_ok and heartbeat_ok:
+        return jsonify({
+            "status": "healthy",
+            "polling": "active",
+            "uptime": uptime,
+            "pid": os.getpid()
+        }), 200
+    else:
+        return jsonify({
+            "status": "degraded",
+            "polling": "active" if polling_ok else "stopped",
+            "heartbeat": "ok" if heartbeat_ok else "stale",
+            "uptime": uptime,
+            "pid": os.getpid()
+        }), 503
 
 @web_app.route('/status')
 def status():
-    """مسار لفحص حالة البوت - يظهر ما إذا كان TOKEN موجوداً أم لا"""
+    """مسار لفحص حالة البوت التفصيلية"""
+    uptime = int(time.time() - BOT_START_TIME)
+    hours = uptime // 3600
+    minutes = (uptime % 3600) // 60
     if TOKEN:
         return jsonify({
             "status": "healthy",
             "token": "موجود ✅",
             "token_length": len(TOKEN),
             "owner_id": OWNER_ID,
-            "message": "البوت يعمل بشكل طبيعي"
+            "uptime": f"{hours}ساعة {minutes}دقيقة",
+            "uptime_seconds": uptime,
+            "polling_active": POLLING_ALIVE.is_set(),
+            "pid": os.getpid(),
+            "message": "البوت يعمل بشكل طبيعي 24/7"
         }), 200
     else:
         return jsonify({
             "status": "unhealthy",
             "token": "غير موجود ❌",
-            "message": "⚠️ متغير البيئة TOKEN غير محدد! اذهب إلى Render Dashboard → Environment → أضف TOKEN"
+            "message": "⚠️ متغير البيئة TOKEN غير محدد!"
         }), 500
+
+@web_app.route('/wake')
+def wake():
+    """مسار خاص لإيقاظ البوت - يُستخدم من خدمة المراقبة"""
+    return jsonify({"awake": True, "pid": os.getpid()}), 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"🌐 Starting production server on port {port}")
     serve(web_app, host='0.0.0.0', port=port)
+
+# ═══ نظام Self-Ping التلقائي لإبقاء Render نشط ═══
+def self_ping_loop():
+    """يرسل طلب لنفسه كل 14 دقيقة لمنع Render من إيقاف الخدمة"""
+    import requests as req_lib
+    # الانتظار حتى يبدأ خادم Flask
+    time.sleep(15)
+    
+    while True:
+        try:
+            port = int(os.environ.get("PORT", 8080))
+            # محاولة الاتصال المحلي أولاً
+            try:
+                resp = req_lib.get(f"http://127.0.0.1:{port}/health", timeout=10)
+                logger.info(f"💓 Self-ping محلي: {resp.status_code}")
+            except:
+                pass
+            
+            # محاولة الاتصال عبر رابط Render إذا كان متاحاً
+            if RENDER_APP_URL:
+                try:
+                    resp = req_lib.get(f"{RENDER_APP_URL}/health", timeout=15)
+                    logger.info(f"💓 Self-ping Render: {resp.status_code}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Self-ping Render فشل: {e}")
+        except Exception as e:
+            logger.warning(f"⚠️ Self-ping error: {e}")
+        
+        # كل 14 دقيقة (قبل انتهاء مهلة Render البالغة 15 دقيقة)
+        time.sleep(840)
+
+# ═══ نظام مراقبة Polling التلقائي ═══
+def polling_watchdog():
+    """يراقب أن البوت polling لا يزال يعمل - يُعيد التشغيل إذا توقف"""
+    global _last_polling_heartbeat
+    time.sleep(30)  # انتظر حتى يبدأ البوت
+    
+    while True:
+        time.sleep(90)  # فحص كل 90 ثانية
+        try:
+            heartbeat_age = time.time() - _last_polling_heartbeat
+            if heartbeat_age > 180:  # لم يحدث نبض منذ 3 دقائق
+                logger.critical(f"🔴 POLLING DEAD! لم يحدث نبض منذ {int(heartbeat_age)} ثانية - إعادة تشغيل قسرية!")
+                # تحرير القفل قبل الخروج لإعادة التشغيل
+                release_singleton_lock()
+                os._exit(1)  # خروج قسري - Render سيعيد التشغيل تلقائياً
+            elif heartbeat_age > 120:
+                logger.warning(f"⚠️ Polling بطيء: آخر نبض منذ {int(heartbeat_age)} ثانية")
+        except Exception as e:
+            logger.error(f"⚠️ Watchdog error: {e}")
 
 # ═════════════════════════════════════════════════════════════════
 # نظام قاعدة البيانات SQLite
@@ -7493,15 +7604,24 @@ def main():
 
     # ═══ محاولة الحصول على قفل أحادي ═══
     if not acquire_singleton_lock():
-        logger.error("❌ مثيل آخر يعمل! الانتظار 60 ثانية...")
-        time.sleep(60)
+        logger.error("❌ مثيل آخر يعمل! الانتظار 30 ثانية...")
+        time.sleep(30)
+        # إزالة القفل القديم بالقوة إذا لزم الأمر
         if not acquire_singleton_lock():
-            logger.error("❌ لا يمكن الحصول على القفل. الخروج.")
-            return
+            logger.warning("⚠️ لا يمكن الحصول على القفل - محاولة إزالة القفل القديم")
+            try:
+                os.remove(LOCK_FILE)
+            except:
+                pass
+            time.sleep(5)
+            if not acquire_singleton_lock():
+                logger.error("❌ لا يمكن الحصول على القفل. الخروج وإعادة المحاولة عبر Render.")
+                return
 
     # ═══ معالجات الإغلاق الأنيق ═══
     def signal_handler(signum, frame):
         logger.info(f"🛑 Received signal {signum}, shutting down gracefully...")
+        POLLING_ALIVE.clear()  # إعلام Watchdog بالتوقف
         release_singleton_lock()
         sys.exit(0)
 
@@ -7513,24 +7633,83 @@ def main():
     flask_thread.start()
     logger.info("✅ خادم Flask بدأ")
 
-    # ═══ نظام إعادة التشغيل التلقائي - محسّن ═══
-    retry_count = 0
-    max_retries = 15
+    # ═══ بدء نظام Self-Ping لإبقاء Render نشط ═══
+    ping_thread = threading.Thread(target=self_ping_loop, daemon=True)
+    ping_thread.start()
+    logger.info("✅ نظام Self-Ping بدأ (كل 14 دقيقة)")
 
-    while retry_count < max_retries:
+    # ═══ بدء نظام مراقبة Polling ═══
+    watchdog_thread = threading.Thread(target=polling_watchdog, daemon=True)
+    watchdog_thread.start()
+    logger.info("✅ نظام مراقبة Polling بدأ (كل 90 ثانية)")
+
+    # ═══ نظام إعادة التشغيل التلقائي اللانهائي - 24/7 ═══
+    retry_count = 0
+
+    while True:  # ← حلقة لا نهائية - البوت لن يتوقف أبداً
         app = None
+        global _last_polling_heartbeat
+        _last_polling_heartbeat = time.time()  # تحديث نبض القلب
+        POLLING_ALIVE.set()  # إعلام Watchdog بأن polling يعمل
+
         try:
             app = build_application()
-            logger.info("🛡️ بوت إدارة المجموعات v13.0 يعمل الآن!")
-            app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
-            # إذا وصلنا هنا، فـ run_polling توقف طبيعياً
-            logger.warning("⚠️ run_polling stopped normally")
-            break
+            logger.info("🛡️ بوت إدارة المجموعات v14.0 - 24/7 يعمل الآن!")
+            
+            # تشغيل polling مع تحديث نبض القلب
+            async def run_with_heartbeat():
+                """تشغيل polling مع تحديث نبض القلب دورياً"""
+                global _last_polling_heartbeat
+                
+                # إعداد مهمة تحديث نبض القلب
+                if app.job_queue:
+                    async def heartbeat_job(context):
+                        global _last_polling_heartbeat
+                        _last_polling_heartbeat = time.time()
+                    app.job_queue.run_repeating(heartbeat_job, interval=30, first=5)
+                    logger.info("✅ نبض القلب التلقائي بدأ (كل 30 ثانية)")
+                
+                # بدء polling
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=Update.ALL_TYPES
+                )
+                logger.info("✅ Polling بدأ بنجاح - البوت يعمل 24/7")
+                
+                # إبقاء التشغيل حتى يتم إيقافه
+                while True:
+                    await asyncio.sleep(1)
+                    if not POLLING_ALIVE.is_set():
+                        break
+            
+            # تشغيل في event loop
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(run_with_heartbeat())
+            except KeyboardInterrupt:
+                logger.info("🛑 تم إيقاف البوت يدوياً")
+                break
+            finally:
+                try:
+                    loop.run_until_complete(app.updater.stop())
+                    loop.run_until_complete(app.stop())
+                    loop.run_until_complete(app.shutdown())
+                except:
+                    pass
+                loop.close()
+            
+            # إذا وصلنا هنا، polling توقف
+            logger.warning("⚠️ run_polling stopped - إعادة التشغيل تلقائياً")
+            POLLING_ALIVE.clear()
 
         except Conflict as e:
             retry_count += 1
-            wait_time = min(120, 30 * retry_count)  # زيادة أسية حتى 120 ثانية
-            logger.warning(f"⚠️ Conflict error (retry #{retry_count}/{max_retries}) - waiting {wait_time}s...")
+            wait_time = min(120, 30 * retry_count)
+            logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting {wait_time}s...")
+            POLLING_ALIVE.clear()
             # حذف webhook عبر REST API
             try:
                 import requests as req
@@ -7542,13 +7721,31 @@ def main():
 
         except Exception as e:
             retry_count += 1
+            POLLING_ALIVE.clear()
             error_str = str(e)
             if "NetworkError" in error_str or "TimedOut" in error_str:
                 logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 15 seconds...")
                 time.sleep(15)
+            elif "Unauthorized" in error_str or "HTTP 401" in error_str:
+                logger.critical(f"❌ TOKEN غير صالح! البوت لن يعمل. تحقق من التوكن.")
+                release_singleton_lock()
+                return
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
-                time.sleep(30)
+                logger.error(f"❌ Error type: {type(e).__name__}")
+                # إعادة التشغيل بعد انتظار
+                wait_time = min(60, 10 * retry_count)
+                time.sleep(wait_time)
+        
+        # إعادة تعيين عداد المحاولات بعد نجاح التشغيل لفترة
+        if retry_count > 0:
+            # إذا وصلنا هنا بعد خطأ، نحاول مرة أخرى
+            logger.info(f"🔄 إعادة المحاولة #{retry_count} - البوت لن يتوقف (24/7)")
+        
+        # إعادة تعيين العداد بعد 5 محاولات ناجحة متتالية
+        if retry_count > 50:
+            retry_count = 0
+            logger.info("✅ تم إعادة تعيين عداد المحاولات")
 
     release_singleton_lock()
     logger.info("🛑 Bot shut down complete")

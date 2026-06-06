@@ -3084,25 +3084,477 @@ def main():
             logger.info("✅ تم حذف أي webhook سابق")
         except Exception as e:
             logger.warning(f"⚠️ لم يتم حذف webhook: {e}")
+        # تعيين قائمة الأوامر في تيليجرام
+        try:
+            await application.bot.set_my_commands([
+                BotCommand("start", "🛡️ لوحة التحكم الرئيسية"),
+                BotCommand("panel", "📋 فتح لوحة التحكم"),
+                BotCommand("help", "❓ المساعدة"),
+                BotCommand("ban", "🚫 حظر مستخدم (رد على رسالته)"),
+                BotCommand("unban", "✅ إلغاء حظر (رد على رسالته)"),
+                BotCommand("delban", "✅ إزالة الحظر وإعادته"),
+                BotCommand("mute", "🔇 كتم مستخدم (رد على رسالته)"),
+                BotCommand("unmute", "🔊 إلغاء كتم (رد على رسالته)"),
+                BotCommand("delmute", "🔊 إزالة الكتم وإعادته"),
+                BotCommand("kick", "👢 طرد مستخدم (رد على رسالته)"),
+                BotCommand("warn", "⚠️ تحذير مستخدم (رد + السبب)"),
+                BotCommand("unwarn", "✅ إزالة تحذيرات (رد على رسالته)"),
+                BotCommand("warns", "📋 عرض التحذيرات (رد على رسالته)"),
+                BotCommand("delwarn", "🗑️ حذف التحذيرات (رد على رسالته)"),
+                BotCommand("del", "🗑️ حذف رسالة (رد عليها)"),
+                BotCommand("pin", "📌 تثبيت رسالة (رد عليها)"),
+                BotCommand("rules", "📋 عرض قوانين المجموعة"),
+                BotCommand("me", "👤 معلوماتي الشخصية"),
+                BotCommand("info", "📊 معلومات المجموعة"),
+                BotCommand("staff", "👥 عرض المشرفين"),
+                BotCommand("badd", "🖤 إضافة للقائمة السوداء"),
+                BotCommand("bdel", "💚 إزالة من القائمة السوداء"),
+                BotCommand("geturl", "🔗 رابط المجموعة"),
+                BotCommand("inactives", "👻 الأعضاء غير النشطين"),
+                BotCommand("listroles", "🎖️ عرض الأدوار"),
+                BotCommand("graphic", "📊 رسم بياني للمجموعة"),
+                BotCommand("send", "📨 إرسال رسالة لعضو"),
+            ])
+            logger.info("✅ تم تعيين قائمة الأوامر في تيليجرام")
+        except Exception as e:
+            logger.warning(f"⚠️ لم يتم تعيين قائمة الأوامر: {e}")
 
     app.post_init = post_init
 
-    # تسجيل معالجات الأوامر
+    # ═══ تسجيل معالجات الأوامر الرئيسية ═══
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("panel", panel_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
-    # أوامر إضافية من الصورة
-    app.add_handler(CommandHandler("ban", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("unban", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("mute", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("unmute", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("kick", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("warn", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("rules", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("info", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("staff", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("me", lambda u, c: start_cmd(u, c)))
-    app.add_handler(CommandHandler("pin", lambda u, c: start_cmd(u, c)))
+
+    # ═══ أوامر الإشراف المباشرة (رد على رسالة المستخدم) ═══
+    async def cmd_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """حظر مستخدم - رد على رسالته"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private":
+            return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!")
+            return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم الذي تريد حظره + اكتب السبب")
+            return
+        target_id = target.from_user.id
+        target_name = target.from_user.first_name
+        reason = " ".join(context.args) if context.args else "بدون سبب"
+        try:
+            await chat.ban_member(target_id)
+            await msg.reply_text(f"🚫 تم حظر {mention(target_id, target_name)}\n📋 السبب: {reason}", parse_mode="HTML")
+            db.log_action(chat.id, user.id, "ban", target_id, reason)
+            db.increment_stat(chat.id, "total_bans")
+            await send_log(chat.id, f"🚫 حظر: {mention(target_id, target_name)} بواسطة {mention(user.id, user.first_name)}\nالسبب: {reason}", context)
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إلغاء حظر - رد على رسالته"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        try:
+            await chat.unban_member(target.from_user.id)
+            await msg.reply_text(f"✅ تم إلغاء حظر {mention(target.from_user.id, target.from_user.first_name)}", parse_mode="HTML")
+            db.log_action(chat.id, user.id, "unban", target.from_user.id)
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """كتم مستخدم"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        try:
+            await chat.restrict_member(target.from_user.id, ChatPermissions(can_send_messages=False))
+            await msg.reply_text(f"🔇 تم كتم {mention(target.from_user.id, target.from_user.first_name)}", parse_mode="HTML")
+            db.log_action(chat.id, user.id, "mute", target.from_user.id)
+            db.increment_stat(chat.id, "total_mutes")
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إلغاء كتم"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        try:
+            perms = ChatPermissions(can_send_messages=True, can_send_photos=True, can_send_videos=True,
+                                   can_send_audios=True, can_send_documents=True, can_send_video_notes=True,
+                                   can_send_voice_notes=True, can_send_polls=True, can_send_other_messages=True,
+                                   can_add_web_page_previews=True)
+            await chat.restrict_member(target.from_user.id, perms)
+            await msg.reply_text(f"🔊 تم إلغاء كتم {mention(target.from_user.id, target.from_user.first_name)}", parse_mode="HTML")
+            db.log_action(chat.id, user.id, "unmute", target.from_user.id)
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """طرد مستخدم"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        try:
+            await chat.ban_member(target.from_user.id)
+            await chat.unban_member(target.from_user.id)
+            await msg.reply_text(f"👢 تم طرد {mention(target.from_user.id, target.from_user.first_name)}", parse_mode="HTML")
+            db.log_action(chat.id, user.id, "kick", target.from_user.id)
+            db.increment_stat(chat.id, "total_kicks")
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """تحذير مستخدم"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم + اكتب السبب"); return
+        reason = " ".join(context.args) if context.args else "بدون سبب"
+        count = db.add_warning(chat.id, target.from_user.id, reason, user.id)
+        db.increment_stat(chat.id, "total_warns")
+        await msg.reply_text(f"⚠️ تحذير {count}/{WARN_LIMIT} لـ {mention(target.from_user.id, target.from_user.first_name)}\n📋 السبب: {reason}", parse_mode="HTML")
+        # تنفيذ الإجراء عند تجاوز الحد
+        if count >= WARN_LIMIT:
+            settings = db.get_settings(chat.id)
+            action = settings.get('warn_action', 'mute')
+            try:
+                if action == 'mute':
+                    await chat.restrict_member(target.from_user.id, ChatPermissions(can_send_messages=False))
+                    await msg.reply_text(f"🔇 تم كتم - تجاوز حد التحذير!", parse_mode="HTML")
+                elif action == 'kick':
+                    await chat.ban_member(target.from_user.id)
+                    await chat.unban_member(target.from_user.id)
+                    await msg.reply_text(f"👢 تم طرد - تجاوز حد التحذير!", parse_mode="HTML")
+                elif action == 'ban':
+                    await chat.ban_member(target.from_user.id)
+                    await msg.reply_text(f"🚫 تم حظر - تجاوز حد التحذير!", parse_mode="HTML")
+                db.reset_warnings(chat.id, target.from_user.id)
+            except: pass
+
+    async def cmd_unwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إزالة تحذيرات"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        db.reset_warnings(chat.id, target.from_user.id)
+        await msg.reply_text(f"✅ تم إزالة تحذيرات {mention(target.from_user.id, target.from_user.first_name)}", parse_mode="HTML")
+
+    async def cmd_warns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """عرض التحذيرات"""
+        chat = update.effective_chat
+        msg = update.message
+        if not chat or chat.type == "private": return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        count = db.get_warning_count(chat.id, target.from_user.id)
+        warns = db.get_warnings(chat.id, target.from_user.id)
+        text_out = f"📋 <b>تحذيرات {mention(target.from_user.id, target.from_user.first_name)}</b> ({count}/{WARN_LIMIT}):\n\n"
+        for i, w in enumerate(warns[:10], 1):
+            text_out += f"{i}. {w['reason']} - {w['warned_at'][:10]}\n"
+        await msg.reply_text(text_out, parse_mode="HTML")
+
+    async def cmd_delwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """حذف التحذيرات"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        db.reset_warnings(chat.id, target.from_user.id)
+        await msg.reply_text(f"🗑️ تم حذف تحذيرات {mention(target.from_user.id, target.from_user.first_name)} ✅", parse_mode="HTML")
+
+    async def cmd_del(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """حذف رسالة بالرد عليها"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if target:
+            try:
+                await target.delete()
+                await msg.delete()
+                db.increment_stat(chat.id, "total_deleted")
+            except: pass
+        else:
+            await msg.reply_text("📌 رد على الرسالة لحذفها")
+
+    async def cmd_pin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """تثبيت رسالة"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if target:
+            try:
+                await target.pin()
+                await msg.reply_text("📌 تم تثبيت الرسالة ✅")
+            except: pass
+        else:
+            await msg.reply_text("📌 رد على الرسالة لتثبيتها")
+
+    async def cmd_rules(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """عرض القوانين"""
+        chat = update.effective_chat
+        if not chat: return
+        settings = db.get_settings(chat.id)
+        rules = settings.get('rules', '')
+        if rules:
+            await update.message.reply_text(f"📋 <b>قوانين المجموعة:</b>\n\n{rules}", parse_mode="HTML")
+        else:
+            await update.message.reply_text("📋 لم يتم تعيين قوانين بعد.")
+
+    async def cmd_me(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """معلوماتي الشخصية"""
+        chat = update.effective_chat
+        user = update.effective_user
+        if not chat or chat.type == "private": return
+        rep = db.get_rep(chat.id, user.id)
+        msg_cnt = db.get_msg_count(chat.id, user.id)
+        warn_cnt = db.get_warning_count(chat.id, user.id)
+        role = db.get_user_role(chat.id, user.id)
+        is_admin = await check_is_admin(chat, user.id)
+        status_text = "مالك" if user.id == OWNER_ID else ("مشرف" if is_admin else "عضو")
+        text = (
+            f"👤 <b>معلوماتي الشخصية</b>\n\n"
+            f"📝 الاسم: {mention(user.id, user.first_name)}\n"
+            f"🆔 المعرف: <code>{user.id}</code>\n"
+            f"🏷️ الحالة: {status_text}\n"
+            f"⭐ السمعة: {rep}\n"
+            f"💬 الرسائل: {msg_cnt}\n"
+            f"⚠️ التحذيرات: {warn_cnt}/{WARN_LIMIT}\n"
+        )
+        if role:
+            text += f"🎖️ الدور: {role}\n"
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def cmd_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """معلومات المجموعة"""
+        chat = update.effective_chat
+        if not chat: return
+        stats = db.get_stats(chat.id)
+        try:
+            count = await chat.get_member_count()
+        except:
+            count = 0
+        text = (
+            f"📊 <b>معلومات المجموعة</b>\n\n"
+            f"📝 الاسم: {chat.title}\n"
+            f"🆔 المعرف: <code>{chat.id}</code>\n"
+            f"👥 الأعضاء: {count}\n"
+            f"💬 الرسائل: {stats.get('total_messages', 0)}\n"
+            f"➕ الانضمامات: {stats.get('total_joins', 0)}\n"
+            f"🚫 الحظر: {stats.get('total_bans', 0)}\n"
+            f"🔇 الكتم: {stats.get('total_mutes', 0)}\n"
+        )
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def cmd_staff(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """عرض المشرفين"""
+        chat = update.effective_chat
+        if not chat: return
+        try:
+            admins = await chat.get_administrators()
+            text = "👥 <b>المشرفين:</b>\n\n"
+            for a in admins:
+                status = "مالك" if a.status == ChatMemberStatus.OWNER else "مشرف"
+                text += f"• {mention(a.user.id, a.user.first_name)} - {status}\n"
+            await update.message.reply_text(text, parse_mode="HTML")
+        except: pass
+
+    async def cmd_badd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إضافة للقائمة السوداء"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم + السبب"); return
+        reason = " ".join(context.args) if context.args else "بدون سبب"
+        db.add_blacklist(chat.id, target.from_user.id, reason, user.id)
+        try:
+            await chat.ban_member(target.from_user.id)
+            await msg.reply_text(f"🖤 تم إضافة {mention(target.from_user.id, target.from_user.first_name)} للقائمة السوداء وحظره ✅", parse_mode="HTML")
+        except:
+            await msg.reply_text(f"🖤 تم إضافته للقائمة السوداء ✅", parse_mode="HTML")
+
+    async def cmd_bdel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إزالة من القائمة السوداء"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم"); return
+        if db.remove_blacklist(chat.id, target.from_user.id):
+            try:
+                await chat.unban_member(target.from_user.id)
+                await msg.reply_text(f"💚 تم إزالة {mention(target.from_user.id, target.from_user.first_name)} من القائمة السوداء ✅", parse_mode="HTML")
+            except:
+                await msg.reply_text("💚 تم الإزالة ✅", parse_mode="HTML")
+        else:
+            await msg.reply_text("❌ غير موجود في القائمة السوداء")
+
+    async def cmd_geturl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """رابط المجموعة"""
+        chat = update.effective_chat
+        if not chat: return
+        try:
+            link = await chat.export_invite_link()
+            await update.message.reply_text(f"🔗 <b>رابط المجموعة:</b>\n\n<code>{link}</code>", parse_mode="HTML")
+        except:
+            await update.message.reply_text("❌ لا يمكن إنشاء رابط")
+
+    async def cmd_inactives(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """الأعضاء غير النشطين"""
+        chat = update.effective_chat
+        if not chat: return
+        inactive = db.get_inactive_users(chat.id, 7)
+        if inactive:
+            text = f"👻 <b>غير النشطين (7 أيام):</b>\n\n"
+            for u in inactive[:20]:
+                text += f"• <code>{u['user_id']}</code>\n"
+        else:
+            text = "👻 جميع الأعضاء نشطين!"
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def cmd_listroles(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """عرض الأدوار"""
+        chat = update.effective_chat
+        if not chat: return
+        roles = db.get_all_roles(chat.id)
+        if roles:
+            text = "📋 <b>الأدوار:</b>\n\n"
+            for uid, role_name in roles:
+                text += f"• {mention(uid, str(uid))} - 🎖️ {role_name}\n"
+        else:
+            text = "📋 لا توجد أدوار مخصصة."
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def cmd_graphic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """رسم بياني"""
+        chat = update.effective_chat
+        if not chat: return
+        stats = db.get_stats(chat.id)
+        if stats:
+            labels = ["الرسائل", "الحظر", "الكتم", "التحذيرات", "المحذوفات", "الغارات", "الروابط", "السبام"]
+            values = [
+                stats.get('total_messages', 0), stats.get('total_bans', 0),
+                stats.get('total_mutes', 0), stats.get('total_warns', 0),
+                stats.get('total_deleted', 0), stats.get('total_raids_blocked', 0),
+                stats.get('total_links_blocked', 0), stats.get('total_spam_blocked', 0)
+            ]
+            max_val = max(values) if max(values) > 0 else 1
+            text = "📊 <b>رسم بياني</b>\n\n"
+            for label, val in zip(labels, values):
+                bar_len = int((val / max_val) * 20)
+                bar = "█" * bar_len + "░" * (20 - bar_len)
+                text += f"{label}: {bar} {val}\n"
+        else:
+            text = "📊 لا توجد إحصائيات."
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def cmd_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إرسال رسالة لعضو"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        target = msg.reply_to_message
+        if not target or not target.from_user:
+            await msg.reply_text("📌 رد على رسالة المستخدم + اكتب الرسالة"); return
+        text_msg = " ".join(context.args) if context.args else ""
+        if not text_msg:
+            await msg.reply_text("📌 اكتب الرسالة بعد الأمر"); return
+        try:
+            await context.bot.send_message(chat_id=target.from_user.id, text=f"📨 <b>رسالة من الإدارة</b>\n\n{text_msg}", parse_mode="HTML")
+            await msg.reply_text("📨 تم إرسال الرسالة ✅")
+        except:
+            await msg.reply_text("❌ لا يمكن الإرسال. المستخدم حظر البوت.")
+
+    # ═══ تسجيل جميع الأوامر ═══
+    app.add_handler(CommandHandler("ban", cmd_ban))
+    app.add_handler(CommandHandler("unban", cmd_unban))
+    app.add_handler(CommandHandler("mute", cmd_mute))
+    app.add_handler(CommandHandler("unmute", cmd_unmute))
+    app.add_handler(CommandHandler("kick", cmd_kick))
+    app.add_handler(CommandHandler("warn", cmd_warn))
+    app.add_handler(CommandHandler("unwarn", cmd_unwarn))
+    app.add_handler(CommandHandler("warns", cmd_warns))
+    app.add_handler(CommandHandler("delwarn", cmd_delwarn))
+    app.add_handler(CommandHandler("del", cmd_del))
+    app.add_handler(CommandHandler("pin", cmd_pin))
+    app.add_handler(CommandHandler("rules", cmd_rules))
+    app.add_handler(CommandHandler("me", cmd_me))
+    app.add_handler(CommandHandler("info", cmd_info))
+    app.add_handler(CommandHandler("staff", cmd_staff))
+    app.add_handler(CommandHandler("badd", cmd_badd))
+    app.add_handler(CommandHandler("bdel", cmd_bdel))
+    app.add_handler(CommandHandler("geturl", cmd_geturl))
+    app.add_handler(CommandHandler("inactives", cmd_inactives))
+    app.add_handler(CommandHandler("listroles", cmd_listroles))
+    app.add_handler(CommandHandler("graphic", cmd_graphic))
+    app.add_handler(CommandHandler("send", cmd_send))
+    app.add_handler(CommandHandler("delban", cmd_unban))      # alias
+    app.add_handler(CommandHandler("delmute", cmd_unmute))    # alias
 
     # تسجيل معالج الأزرار التفاعلية
     app.add_handler(CallbackQueryHandler(callback_handler))

@@ -3099,21 +3099,52 @@ async def check_scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
 # ═════════════════════════════════════════════════════════════════
 
 def kill_existing_instances():
-    """قتل أي مثيل سابق للبوت لمنع خطأ Conflict"""
+    """قتل أي مثيل سابق للبوت لمنع خطأ Conflict - طريقة شاملة"""
     import requests as req
     api_url = f"https://api.telegram.org/bot{TOKEN}"
+    
+    # الخطوة 1: حذف webhook لإيقاف أي polling قائم
     try:
         resp = req.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
-        logger.info(f"✅ deleteWebhook: {resp.status_code}")
+        logger.info(f"✅ Step 1 - deleteWebhook: {resp.status_code}")
     except Exception as e:
         logger.warning(f"⚠️ deleteWebhook failed: {e}")
-    time.sleep(2)
+    
+    time.sleep(3)
+    
+    # الخطوة 2: استنزاف كل التحديثات المعلقة بـ getUpdates
     try:
-        req.post(f"{api_url}/getUpdates", json={"offset": -1, "timeout": 0}, timeout=10)
-        logger.info("✅ Cleared pending updates")
+        for drain_attempt in range(5):
+            resp = req.post(f"{api_url}/getUpdates", json={"timeout": 0}, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                updates = data.get('result', [])
+                if updates:
+                    max_offset = max(u['update_id'] for u in updates)
+                    req.post(f"{api_url}/getUpdates", json={"offset": max_offset + 1, "timeout": 0}, timeout=10)
+                    logger.info(f"✅ Step 2 - Drained {len(updates)} pending updates")
+                else:
+                    logger.info("✅ Step 2 - No pending updates")
+                    break
+            elif resp.status_code == 409:
+                logger.warning(f"⚠️ Step 2 - Still conflict, waiting... (attempt {drain_attempt + 1})")
+                time.sleep(3)
+            else:
+                logger.warning(f"⚠️ Step 2 - getUpdates returned {resp.status_code}")
+                break
+            time.sleep(1)
     except Exception as e:
-        logger.warning(f"⚠️ Clear updates failed: {e}")
-    time.sleep(2)
+        logger.warning(f"⚠️ Drain updates failed: {e}")
+    
+    # الخطوة 3: حذف webhook مرة أخرى للتأكد
+    try:
+        req.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+        logger.info("✅ Step 3 - Second deleteWebhook done")
+    except:
+        pass
+    
+    time.sleep(5)
+    logger.info("✅ Old instance cleanup complete - safe to start")
 
 
 def build_and_run():
@@ -3687,17 +3718,21 @@ def main():
     while True:
         try:
             build_and_run()
-            logger.warning("⚠️ run_polling stopped normally - restarting in 5 seconds...")
+            # إذا وصلنا هنا، فـ run_polling توقف طبيعياً
+            logger.warning("⚠️ run_polling stopped normally - restarting in 10 seconds...")
+            time.sleep(10)
         except Exception as e:
             error_str = str(e)
             retry_count += 1
             if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
-                logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - restarting in 10 seconds...")
-                time.sleep(5)  # انتظار إضافي قبل إعادة المحاولة
+                logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting 20 seconds before restart...")
+                time.sleep(20)
+            elif "NetworkError" in error_str or "TimedOut" in error_str:
+                logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 10 seconds...")
+                time.sleep(10)
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
-        
-        time.sleep(5)
+                time.sleep(10)
 
 
 async def _background_tasks(app):

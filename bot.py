@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║    🛡️ بوت إدارة المجموعات المتكامل v9.0 - الإصدار الخارق 🛡️    ║
+║  🛡️ بوت إدارة المجموعات المتكامل v10.0 - الإصدار الخارق 🛡️     ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
@@ -65,7 +65,7 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v9.0",
+        "bot": "Group Manager v10.0",
         "token_set": bool(TOKEN),
         "uptime": True
     }), 200
@@ -295,6 +295,10 @@ class Database:
             conn.close()
 
     def update_setting(self, chat_id: int, key: str, value):
+        # حماية من SQL Injection
+        if key not in VALID_SETTING_KEYS:
+            logger.error(f"Invalid setting key attempted: {key}")
+            return
         with self.lock:
             conn = self._get_conn()
             c = conn.cursor()
@@ -1219,6 +1223,12 @@ def kb_other():
          InlineKeyboardButton("📋 قائمة الأعضاء", callback_data="act_list")],
         [InlineKeyboardButton("📦 نسخ احتياطي", callback_data="act_backup"),
          InlineKeyboardButton("🆔 معرفات", callback_data="act_id")],
+        [InlineKeyboardButton("🔔 تنبيه المشرفين", callback_data="act_alertadmins"),
+         InlineKeyboardButton("📝 استطلاع", callback_data="act_poll")],
+        [InlineKeyboardButton("🎫 إنشاء تذكرة", callback_data="act_ticket"),
+         InlineKeyboardButton("🎲 لعبة السؤال", callback_data="act_quiz")],
+        [InlineKeyboardButton("⏱️ مؤقت", callback_data="act_timer"),
+         InlineKeyboardButton("💬 اقتباس عشوائي", callback_data="act_quote")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -1310,7 +1320,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == OWNER_ID:
         is_adm = True
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v9.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v10.0</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "🤖 <b>ذكاء اصطناعي</b> ردود ذكية تلقائية في المجموعة\n"
@@ -1319,7 +1329,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⏰ <b>جدولة رسائل</b> إرسال تلقائي في أوقات محددة\n"
         "🖤 <b>قائمة سوداء</b> حظر تلقائي دائم\n"
         "🌙 <b>وضع الغياب</b> إدارة تلقائية عند غياب المشرفين\n"
-        "🆕 <b>نسخ احتياطي</b> تصدير واستيراد الإعدادات\n\n"
+        "🆕 <b>نسخ احتياطي</b> تصدير واستيراد الإعدادات\n"
+        "🔔 <b>تنبيهات المشرفين</b> إشعار فوري عند الحاجة\n"
+        "🎲 <b>ألعاب وترفيه</b> ألعاب جماعية ممتعة\n"
+        "📝 <b>استطلاعات</b> تصويت جماعي\n"
+        "🎫 <b>نظام تذاكر</b> للبلاغات والدعم الفني\n\n"
         "👇 اختر أي قسم من الأزرار أدناه:"
     )
     try:
@@ -1352,7 +1366,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ═══ القائمة الرئيسية ═══
         if data == "back":
             await safe_edit(query,
-                "🛡️ <b>بوت إدارة المجموعات المتكامل v7.0</b>\n\n"
+                "🛡️ <b>بوت إدارة المجموعات المتكامل v10.0</b>\n\n"
                 "🔐 حماية متقدمة | ⚡ إدارة ذكية | 🤖 ذكاء اصطناعي\n\n"
                 "👇 اختر أي قسم:",
                 reply_markup=kb_main(is_adm or is_owner))
@@ -2130,6 +2144,61 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = f"📊 <b>إحصائيات عامة</b>\n\n📁 عدد المجموعات: {len(group_ids)}\n"
             await safe_edit(query, text, reply_markup=kb_back())
 
+        # ═══ مميزات جديدة v10.0 ═══
+        elif data == "act_alertadmins":
+            # تنبيه المشرفين - إرسال mention لكل المشرفين
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            try:
+                admins = await chat.get_administrators()
+                admin_text = "🔔 <b>تنبيه للمشرفين!</b>\n\n"
+                for a in admins:
+                    admin_text += f"• {mention(a.user.id, a.user.first_name)}\n"
+                admin_text += f"\n📍 تم التنبيه بواسطة: {mention(user_id, query.from_user.first_name)}"
+                await chat.send_message(admin_text, parse_mode="HTML")
+                await safe_edit(query, "🔔 تم تنبيه المشرفين ✅", reply_markup=kb_back())
+            except Exception as e:
+                await safe_edit(query, f"❌ خطأ: {e}", reply_markup=kb_back())
+
+        elif data == "act_poll":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            context.user_data["waiting"] = "poll_question"
+            await safe_edit(query, "📝 <b>إنشاء استطلاع</b>\n\nاكتب السؤال ثم الخيارات مفصولة بـ |:\nمثال: ما رأيك؟ | ممتاز | جيد | سيء", reply_markup=kb_back_cancel())
+
+        elif data == "act_ticket":
+            context.user_data["waiting"] = "ticket"
+            await safe_edit(query, "🎫 <b>إنشاء تذكرة دعم</b>\n\nاكتب مشكلتك أو اقتراحك:", reply_markup=kb_back_cancel())
+
+        elif data == "act_quiz":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            context.user_data["waiting"] = "quiz_question"
+            await safe_edit(query, "🎲 <b>لعبة السؤال</b>\n\nاكتب السؤال ثم الخيارات مفصولة بـ | (الإجابة الصحيحة أولاً):\nمثال: عاصمة السعودية؟ | الرياض | جدة | مكة", reply_markup=kb_back_cancel())
+
+        elif data == "act_timer":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            context.user_data["waiting"] = "timer"
+            await safe_edit(query, "⏱️ <b>مؤقت</b>\n\nاكتب عدد الدقائق ثم الرسالة:\nمثال: 5 | انتهى الاجتماع!", reply_markup=kb_back_cancel())
+
+        elif data == "act_quote":
+            # اقتباس عشوائي محفوظ
+            quotes = [
+                "🌟 النجاح ليس نهائياً، والفشل ليس قاتلاً: إنما الشجاعة للاستمرار هي ما يهم. - ونستون تشرشل",
+                "💡 الطريقة الوحيدة للقيام بعمل عظيم هي أن تحب ما تفعله. - ستيف جوبز",
+                "🚀 لا تنتظر الفرصة، بل اصنعها. - جورج برنارد شو",
+                "💪 الصعوبات هي التي تُظهر الرجال. - أبيقور",
+                "🎯 إن لم تكن تسير نحو شيء، فأنت تسير نحو لا شيء. - هالي بيري",
+                "📚 العلم نور، والجهل ظلام. - مثل عربي",
+                "🤝 اليد الواحدة لا تصفق. - مثل عربي",
+                "⭐ من جدّ وجد، ومن زرع حصد. - مثل عربي",
+                "🌈 بعد كل عسر يسر. - القرآن الكريم",
+                "🔥 النار تصقل الحديد، والتجارب تصقل الرجال. - حكمة",
+            ]
+            quote = random.choice(quotes)
+            await safe_edit(query, f"💬 <b>اقتباس عشوائي</b>\n\n{quote}", reply_markup=kb_back())
+
     except Exception as e:
         logger.error(f"callback_handler error: {e}")
 
@@ -2807,6 +2876,112 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await msg.reply_text("❌ استخدم: الدقائق | الرسالة\nمثال: 30 | حان وقت الصلاة")
             context.user_data.pop("waiting", None); return
 
+        # ═══ مميزات جديدة v10.0 ═══
+
+        # استطلاع - السؤال
+        elif waiting == "poll_question":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|")
+                if len(parts) >= 3:
+                    question = parts[0].strip()
+                    options = [p.strip() for p in parts[1:] if p.strip()]
+                    if 2 <= len(options) <= 10:
+                        try:
+                            from telegram import Poll
+                            await context.bot.send_poll(
+                                chat_id=chat.id,
+                                question=question,
+                                options=options,
+                                is_anonymous=False,
+                                allows_multiple_answers=False
+                            )
+                            await msg.reply_text("📝 تم إنشاء الاستطلاع ✅")
+                        except Exception as e:
+                            await msg.reply_text(f"❌ خطأ: {e}")
+                    else:
+                        await msg.reply_text("❌ يجب أن يكون بين 2 و 10 خيارات")
+                else:
+                    await msg.reply_text("❌ الصيغة: السؤال | خيار1 | خيار2 | خيار3")
+            else:
+                await msg.reply_text("❌ استخدم: السؤال | خيار1 | خيار2 | خيار3")
+            context.user_data.pop("waiting", None); return
+
+        # تذكرة دعم
+        elif waiting == "ticket":
+            ticket_id = random.randint(10000, 99999)
+            ticket_text = (
+                f"🎫 <b>تذكرة دعم جديدة #{ticket_id}</b>\n\n"
+                f"👤 من: {mention(user_id, user.first_name)}\n"
+                f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+                f"💬 المشكلة/الاقتراح:\n{text}\n\n"
+                f"⏳ الحالة: قيد المراجعة"
+            )
+            await msg.reply_text(ticket_text, parse_mode="HTML")
+            # إرسال للمشرفين
+            try:
+                admins = await chat.get_administrators()
+                admin_mentions = " ".join([f"<a href=\"tg://user?id={a.user.id}\">‌</a>" for a in admins[:5]])
+                await chat.send_message(f"🎫 تذكرة جديدة #{ticket_id} {admin_mentions}", parse_mode="HTML")
+            except: pass
+            context.user_data.pop("waiting", None); return
+
+        # لعبة السؤال
+        elif waiting == "quiz_question":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|")
+                if len(parts) >= 3:
+                    question = parts[0].strip()
+                    options = [p.strip() for p in parts[1:] if p.strip()]
+                    if 2 <= len(options) <= 10:
+                        try:
+                            await context.bot.send_poll(
+                                chat_id=chat.id,
+                                question=f"🎲 {question}",
+                                options=options,
+                                type="quiz",
+                                correct_option_id=0,  # الإجابة الأولى هي الصحيحة
+                                is_anonymous=False
+                            )
+                            await msg.reply_text("🎲 تم إنشاء لعبة السؤال ✅")
+                        except Exception as e:
+                            await msg.reply_text(f"❌ خطأ: {e}")
+                    else:
+                        await msg.reply_text("❌ يجب أن يكون بين 2 و 10 خيارات")
+                else:
+                    await msg.reply_text("❌ الصيغة: السؤال | الإجابة الصحيحة | خيار خاطئ | خيار خاطئ")
+            else:
+                await msg.reply_text("❌ استخدم: السؤال | إجابة صحيحة | خيارات أخرى")
+            context.user_data.pop("waiting", None); return
+
+        # مؤقت
+        elif waiting == "timer":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|", 1)
+                try:
+                    minutes = int(parts[0].strip())
+                    timer_msg = parts[1].strip() if len(parts) > 1 else "انتهى المؤقت!"
+                    await msg.reply_text(f"⏱️ تم تعيين مؤقت لمدة {minutes} دقيقة ✅")
+                    # جدولة الرسالة
+                    send_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                    db.add_scheduled(chat.id, f"⏱️ {timer_msg}", send_at, user_id)
+                except:
+                    await msg.reply_text("❌ الصيغة: الدقائق | الرسالة")
+            else:
+                try:
+                    minutes = int(text.strip())
+                    await msg.reply_text(f"⏱️ تم تعيين مؤقت لمدة {minutes} دقيقة ✅")
+                    send_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                    db.add_scheduled(chat.id, "⏱️ انتهى المؤقت!", send_at, user_id)
+                except:
+                    await msg.reply_text("❌ اكتب عدد الدقائق أو: الدقائق | الرسالة")
+            context.user_data.pop("waiting", None); return
+
         else:
             context.user_data.pop("waiting", None)
 
@@ -3225,6 +3400,57 @@ async def check_scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
         except: pass
 
 
+async def cleanup_memory(context: ContextTypes.DEFAULT_TYPE):
+    """تنظيف ذاكرة الفلود والغارات - يمنع تسرب الذاكرة"""
+    global flood_data, raid_data, slow_mode_data
+    now = time.time()
+    
+    # تنظيف بيانات الفلود القديمة
+    for chat_id in list(flood_data.keys()):
+        for user_id in list(flood_data[chat_id].keys()):
+            flood_data[chat_id][user_id] = [t for t in flood_data[chat_id][user_id] if now - t <= 60]
+            if not flood_data[chat_id][user_id]:
+                del flood_data[chat_id][user_id]
+        if not flood_data[chat_id]:
+            del flood_data[chat_id]
+    
+    # تنظيف بيانات الغارات القديمة
+    for chat_id in list(raid_data.keys()):
+        raid_data[chat_id] = [t for t in raid_data[chat_id] if now - t <= 60]
+        if not raid_data[chat_id]:
+            del raid_data[chat_id]
+    
+    # تنظيف بيانات الوضع البطيء القديمة
+    for key in list(slow_mode_data.keys()):
+        if now - slow_mode_data[key] > 300:  # أكثر من 5 دقائق
+            del slow_mode_data[key]
+    
+    logger.info("🧹 تم تنظيف الذاكرة المؤقتة")
+
+
+async def check_expired_captchas(context: ContextTypes.DEFAULT_TYPE):
+    """فحص الكابتشا المنتهية وطرد المستخدمين الذين لم يحلوها"""
+    with db.lock:
+        conn = db._get_conn()
+        c = conn.cursor()
+        # البحث عن كابتشا أقدم من 120 ثانية
+        cutoff = (datetime.now() - timedelta(seconds=120)).strftime("%Y-%m-%d %H:%M:%S")
+        c.execute("SELECT * FROM captcha_pending WHERE created_at <= ?", (cutoff,))
+        expired = c.fetchall()
+        for cap in expired:
+            try:
+                # حظر المستخدم مؤقتاً (طرد وإلغاء حظر)
+                await context.bot.ban_chat_member(cap['chat_id'], cap['user_id'])
+                await context.bot.unban_chat_member(cap['chat_id'], cap['user_id'])
+            except: pass
+            c.execute("DELETE FROM captcha_pending WHERE chat_id = ? AND user_id = ?",
+                     (cap['chat_id'], cap['user_id']))
+        conn.commit()
+        conn.close()
+    if expired:
+        logger.info(f"🧹 تم طرد {len(expired)} مستخدم لم يحلوا الكابتشا")
+
+
 # ═════════════════════════════════════════════════════════════════
 # الدالة الرئيسية - مع إصلاح مشكلة Conflict
 # ═════════════════════════════════════════════════════════════════
@@ -3241,11 +3467,11 @@ def kill_existing_instances():
     except Exception as e:
         logger.warning(f"⚠️ deleteWebhook failed: {e}")
     
-    time.sleep(3)
+    time.sleep(5)  # انتظار أطول لإيقاف المثيل القديم
     
     # الخطوة 2: استنزاف كل التحديثات المعلقة بـ getUpdates
     try:
-        for drain_attempt in range(5):
+        for drain_attempt in range(8):  # زيادة المحاولات
             resp = req.post(f"{api_url}/getUpdates", json={"timeout": 0}, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
@@ -3258,12 +3484,12 @@ def kill_existing_instances():
                     logger.info("✅ Step 2 - No pending updates")
                     break
             elif resp.status_code == 409:
-                logger.warning(f"⚠️ Step 2 - Still conflict, waiting... (attempt {drain_attempt + 1})")
-                time.sleep(3)
+                logger.warning(f"⚠️ Still conflict (attempt {drain_attempt + 1}/8)")
+                time.sleep(5)  # انتظار أطول
             else:
-                logger.warning(f"⚠️ Step 2 - getUpdates returned {resp.status_code}")
+                logger.warning(f"⚠️ getUpdates returned {resp.status_code}")
                 break
-            time.sleep(1)
+            time.sleep(2)
     except Exception as e:
         logger.warning(f"⚠️ Drain updates failed: {e}")
     
@@ -3288,6 +3514,7 @@ def build_and_run():
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("✅ تم حذف أي webhook سابق (post_init)")
+            await asyncio.sleep(3)  # انتظار إضافي لضمان توقف المثيل القديم
         except Exception as e:
             logger.warning(f"⚠️ لم يتم حذف webhook: {e}")
         try:
@@ -3318,6 +3545,11 @@ def build_and_run():
                 BotCommand("listroles", "🎖️ عرض الأدوار"),
                 BotCommand("graphic", "📊 رسم بياني للمجموعة"),
                 BotCommand("send", "📨 إرسال رسالة لعضو"),
+                BotCommand("poll", "📝 إنشاء استطلاع"),
+                BotCommand("quiz", "🎲 لعبة سؤال"),
+                BotCommand("timer", "⏱️ تعيين مؤقت"),
+                BotCommand("quote", "💬 اقتباس عشوائي"),
+                BotCommand("ticket", "🎫 إنشاء تذكرة دعم"),
             ])
             logger.info("✅ تم تعيين قائمة الأوامر في تلييجرام")
         except Exception as e:
@@ -3765,7 +3997,7 @@ def build_and_run():
     app.add_handler(CommandHandler("delban", cmd_unban))      # alias
     app.add_handler(CommandHandler("delmute", cmd_unmute))    # alias
 
-    # ═══ أوامر جديدة v9.0 ═══
+    # ═══ أوامر جديدة v10.0 ═══
     async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         """أمر /id - عرض معرف المستخدم والمجموعة"""
         chat = update.effective_chat
@@ -3833,7 +4065,7 @@ def build_and_run():
             await msg.reply_text("⛔ للمشرفين فقط!"); return
         welcome_back_msg = " ".join(context.args) if context.args else ""
         if welcome_back_msg:
-            db.update_setting(chat.id, "welcome_msg", welcome_back_msg)
+            db.update_setting(chat.id, "welcome_back_msg", welcome_back_msg)  # إصلاح: كان يحفظ في welcome_msg بالخطأ
             await msg.reply_text(f"✅ تم تعيين رسالة الترحيب بالعودة!\n\n📦 الرسالة:\n{welcome_back_msg}")
         else:
             await msg.reply_text("📝 اكتب الرسالة بعد الأمر\nمثال: /welcomeback مرحباً بعودتك يا {user}! 🎊")
@@ -3841,6 +4073,143 @@ def build_and_run():
     app.add_handler(CommandHandler("id", cmd_id))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("welcomeback", cmd_welcome_back))
+
+    # ═══ أوامر جديدة v10.0 - خدمات إضافية ═══
+    async def cmd_poll(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إنشاء استطلاع عبر الأمر"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        text_msg = " ".join(context.args) if context.args else ""
+        if "|" not in text_msg:
+            await msg.reply_text("📝 الصيغة: /poll السؤال | خيار1 | خيار2 | خيار3")
+            return
+        parts = text_msg.split("|")
+        if len(parts) < 3:
+            await msg.reply_text("❌ يجب أن يكون هناك سؤال وخياران على الأقل")
+            return
+        question = parts[0].strip()
+        options = [p.strip() for p in parts[1:] if p.strip()]
+        try:
+            await context.bot.send_poll(chat_id=chat.id, question=question, options=options, is_anonymous=False)
+            await msg.reply_text("📝 تم إنشاء الاستطلاع ✅")
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إنشاء لعبة سؤال"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        text_msg = " ".join(context.args) if context.args else ""
+        if "|" not in text_msg:
+            await msg.reply_text("🎲 الصيغة: /quiz السؤال | الإجابة الصحيحة | خيار خاطئ")
+            return
+        parts = text_msg.split("|")
+        if len(parts) < 3:
+            await msg.reply_text("❌ يجب أن يكون هناك سؤال وخياران على الأقل")
+            return
+        question = parts[0].strip()
+        options = [p.strip() for p in parts[1:] if p.strip()]
+        try:
+            await context.bot.send_poll(chat_id=chat.id, question=question, options=options,
+                                        type="quiz", correct_option_id=0, is_anonymous=False)
+            await msg.reply_text("🎲 تم إنشاء لعبة السؤال ✅")
+        except Exception as e:
+            await msg.reply_text(f"❌ خطأ: {e}")
+
+    async def cmd_timer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """تعيين مؤقت"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        if not await check_is_admin(chat, user.id):
+            await msg.reply_text("⛔ للمشرفين فقط!"); return
+        text_msg = " ".join(context.args) if context.args else ""
+        if not text_msg:
+            await msg.reply_text("⏱️ الصيغة: /timer الدقائق أو /timer الدقائق | الرسالة")
+            return
+        if "|" in text_msg:
+            parts = text_msg.split("|", 1)
+            try:
+                minutes = int(parts[0].strip())
+                timer_msg = parts[1].strip()
+            except:
+                await msg.reply_text("❌ الصيغة خاطئة"); return
+        else:
+            try:
+                minutes = int(text_msg.strip())
+                timer_msg = "انتهى المؤقت!"
+            except:
+                await msg.reply_text("❌ اكتب عدد الدقائق"); return
+        if minutes < 1 or minutes > 1440:
+            await msg.reply_text("❌ الدقائق بين 1 و 1440"); return
+        send_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+        db.add_scheduled(chat.id, f"⏱️ {timer_msg}", send_at, user.id)
+        await msg.reply_text(f"⏱️ تم تعيين مؤقت لمدة {minutes} دقيقة ✅")
+
+    async def cmd_quote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """اقتباس عشوائي"""
+        quotes = [
+            "🌟 النجاح ليس نهائياً، والفشل ليس قاتلاً: إنما الشجاعة للاستمرار هي ما يهم. - ونستون تشرشل",
+            "💡 الطريقة الوحيدة للقيام بعمل عظيم هي أن تحب ما تفعله. - ستيف جوبز",
+            "🚀 لا تنتظر الفرصة، بل اصنعها. - جورج برنارد شو",
+            "💪 الصعوبات هي التي تُظهر الرجال. - أبيقور",
+            "📚 العلم نور، والجهل ظلام. - مثل عربي",
+            "🤝 اليد الواحدة لا تصفق. - مثل عربي",
+            "⭐ من جدّ وجد، ومن زرع حصد. - مثل عربي",
+            "🌈 بعد كل عسر يسر. - القرآن الكريم",
+        ]
+        await update.message.reply_text(f"💬 <b>اقتباس عشوائي</b>\n\n{random.choice(quotes)}", parse_mode="HTML")
+
+    async def cmd_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """إنشاء تذكرة دعم"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        text_msg = " ".join(context.args) if context.args else ""
+        if not text_msg:
+            await msg.reply_text("🎫 الصيغة: /ticket مشكلتك أو اقتراحك")
+            return
+        ticket_id = random.randint(10000, 99999)
+        ticket_text = (
+            f"🎫 <b>تذكرة دعم جديدة #{ticket_id}</b>\n\n"
+            f"👤 من: {mention(user.id, user.first_name)}\n"
+            f"📅 التاريخ: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n"
+            f"💬 المشكلة/الاقتراح:\n{text_msg}\n\n"
+            f"⏳ الحالة: قيد المراجعة"
+        )
+        await msg.reply_text(ticket_text, parse_mode="HTML")
+
+    async def cmd_alertadmins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """تنبيه المشرفين"""
+        chat = update.effective_chat
+        user = update.effective_user
+        msg = update.message
+        if not chat or chat.type == "private": return
+        try:
+            admins = await chat.get_administrators()
+            admin_text = "🔔 <b>تنبيه للمشرفين!</b>\n\n"
+            for a in admins:
+                admin_text += f"• {mention(a.user.id, a.user.first_name)}\n"
+            admin_text += f"\n📍 تم التنبيه بواسطة: {mention(user.id, user.first_name)}"
+            await chat.send_message(admin_text, parse_mode="HTML")
+        except: pass
+
+    app.add_handler(CommandHandler("poll", cmd_poll))
+    app.add_handler(CommandHandler("quiz", cmd_quiz))
+    app.add_handler(CommandHandler("timer", cmd_timer))
+    app.add_handler(CommandHandler("quote", cmd_quote))
+    app.add_handler(CommandHandler("ticket", cmd_ticket))
+    app.add_handler(CommandHandler("alertadmins", cmd_alertadmins))
 
     # تسجيل معالج الأزرار التفاعلية
     app.add_handler(CallbackQueryHandler(callback_handler))
@@ -3877,7 +4246,9 @@ def build_and_run():
         if app.job_queue:
             app.job_queue.run_repeating(check_temp_mutes, interval=60, first=10)
             app.job_queue.run_repeating(check_scheduled_messages, interval=30, first=15)
-            logger.info("✅ تم تسجيل جدولة المهام")
+            app.job_queue.run_repeating(cleanup_memory, interval=300, first=60)  # تنظيف الذاكرة كل 5 دقائق
+            app.job_queue.run_repeating(check_expired_captchas, interval=60, first=30)  # فحص الكابتشا المنتهية
+            logger.info("✅ تم تسجيل جدولة المهام (4 مهام)")
         else:
             logger.warning("⚠️ JobQueue غير متاح - استخدام خيط بديل")
             def background_checker():
@@ -3894,7 +4265,7 @@ def build_and_run():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v9.0 يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v10.0 يعمل الآن!")
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
@@ -3940,8 +4311,8 @@ def main():
             error_str = str(e)
             retry_count += 1
             if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
-                logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting 20 seconds before restart...")
-                time.sleep(20)
+                logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting 30 seconds before restart...")
+                time.sleep(30)  # زيادة الانتظار
             elif "NetworkError" in error_str or "TimedOut" in error_str:
                 logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 10 seconds...")
                 time.sleep(10)

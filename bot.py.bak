@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  🛡️ بوت إدارة المجموعات المتكامل v11.0 - الإصدار الخارق 🛡️     ║
+║  🛡️ بوت إدارة المجموعات المتكامل v10.0 - الإصدار الخارق 🛡️     ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
@@ -27,7 +27,6 @@ from telegram.ext import (
     filters, ContextTypes
 )
 from telegram.constants import ChatMemberStatus, ParseMode
-from telegram.error import Conflict
 
 # ═════════════════════════════════════════════════════════════════
 # إعداد السجلات
@@ -66,7 +65,7 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v11.0",
+        "bot": "Group Manager v10.0",
         "token_set": bool(TOKEN),
         "uptime": True
     }), 200
@@ -265,39 +264,6 @@ class Database:
                 chat_id INTEGER, user_id INTEGER, role_name TEXT,
                 assigned_by INTEGER, assigned_at TEXT DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(chat_id, user_id)
-            )''')
-            # شبكة البوتات - تواصل البوتات مع بعضها
-            c.execute('''CREATE TABLE IF NOT EXISTS bot_network (
-                chat_id INTEGER, bot_id INTEGER, bot_name TEXT DEFAULT '',
-                added_by INTEGER, is_active INTEGER DEFAULT 1,
-                added_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY(chat_id, bot_id)
-            )''')
-            # نظام المستويات
-            c.execute('''CREATE TABLE IF NOT EXISTS user_levels (
-                chat_id INTEGER, user_id INTEGER, xp INTEGER DEFAULT 0,
-                level INTEGER DEFAULT 1, last_xp_time TEXT DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY(chat_id, user_id)
-            )''')
-            # الردود المتعلمة من المشرفين
-            c.execute('''CREATE TABLE IF NOT EXISTS learned_responses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id INTEGER, trigger_pattern TEXT, response TEXT,
-                learned_from INTEGER, times_used INTEGER DEFAULT 0,
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(chat_id, trigger_pattern)
-            )''')
-            # سجل الألعاب
-            c.execute('''CREATE TABLE IF NOT EXISTS game_scores (
-                chat_id INTEGER, user_id INTEGER, game_type TEXT,
-                score INTEGER DEFAULT 0, played_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY(chat_id, user_id, game_type)
-            )''')
-            # تفاعلات الرسائل
-            c.execute('''CREATE TABLE IF NOT EXISTS reaction_stats (
-                chat_id INTEGER, user_id INTEGER, reactions_received INTEGER DEFAULT 0,
-                reactions_given INTEGER DEFAULT 0,
-                PRIMARY KEY(chat_id, user_id)
             )''')
             conn.commit()
             conn.close()
@@ -535,9 +501,6 @@ class Database:
 
     # ═══ الإحصائيات ═══
     def increment_stat(self, chat_id, stat):
-        if stat not in VALID_STAT_KEYS:
-            logger.error(f"Invalid stat key attempted: {stat}")
-            return
         with self.lock:
             conn = self._get_conn()
             c = conn.cursor()
@@ -868,226 +831,8 @@ class Database:
             conn.close()
             return [(r[0], r[1]) for r in rows]
 
-    # ═══ شبكة البوتات ═══
-    def add_bot_network(self, chat_id, bot_id, bot_name, added_by):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO bot_network (chat_id, bot_id, bot_name, added_by, is_active) VALUES (?, ?, ?, ?, 1)",
-                     (chat_id, bot_id, bot_name, added_by))
-            conn.commit()
-            conn.close()
-
-    def remove_bot_network(self, chat_id, bot_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("DELETE FROM bot_network WHERE chat_id = ? AND bot_id = ?", (chat_id, bot_id))
-            d = c.rowcount > 0
-            conn.commit()
-            conn.close()
-            return d
-
-    def get_bot_network(self, chat_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT bot_id, bot_name, is_active FROM bot_network WHERE chat_id = ?", (chat_id,))
-            rows = c.fetchall()
-            conn.close()
-            return [dict(r) for r in rows]
-
-    def is_bot_allowed(self, chat_id, bot_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT is_active FROM bot_network WHERE chat_id = ? AND bot_id = ?", (chat_id, bot_id))
-            row = c.fetchone()
-            conn.close()
-            return row is not None and row[0] == 1
-
-    # ═══ نظام المستويات ═══
-    def add_xp(self, chat_id, user_id, amount=1):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            c.execute("INSERT INTO user_levels (chat_id, user_id, xp, level, last_xp_time) VALUES (?, ?, ?, 1, ?) ON CONFLICT(chat_id, user_id) DO UPDATE SET xp = xp + ?, last_xp_time = ?",
-                     (chat_id, user_id, amount, now, amount, now))
-            c.execute("SELECT xp, level FROM user_levels WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            row = c.fetchone()
-            xp, level = row[0], row[1]
-            new_level = min(50, int((xp / LEVEL_XP_BASE) ** 0.5) + 1)
-            if new_level > level:
-                c.execute("UPDATE user_levels SET level = ? WHERE chat_id = ? AND user_id = ?", (new_level, chat_id, user_id))
-                level = new_level
-            conn.commit()
-            conn.close()
-            return xp, level, new_level > (min(50, int(((xp - amount) / LEVEL_XP_BASE) ** 0.5) + 1))
-
-    def get_user_level(self, chat_id, user_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT xp, level FROM user_levels WHERE chat_id = ? AND user_id = ?", (chat_id, user_id))
-            row = c.fetchone()
-            conn.close()
-            if row:
-                return {"xp": row[0], "level": row[1]}
-            return {"xp": 0, "level": 1}
-
-    def get_level_leaderboard(self, chat_id, limit=10):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT user_id, xp, level FROM user_levels WHERE chat_id = ? ORDER BY xp DESC LIMIT ?", (chat_id, limit))
-            rows = c.fetchall()
-            conn.close()
-            return [(r[0], r[1], r[2]) for r in rows]
-
-    # ═══ الردود المتعلمة ═══
-    def add_learned_response(self, chat_id, trigger, response, learned_from):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT OR REPLACE INTO learned_responses (chat_id, trigger_pattern, response, learned_from) VALUES (?, ?, ?, ?)",
-                     (chat_id, trigger, response, learned_from))
-            conn.commit()
-            conn.close()
-
-    def get_learned_responses(self, chat_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT trigger_pattern, response FROM learned_responses WHERE chat_id = ?", (chat_id,))
-            rows = c.fetchall()
-            conn.close()
-            return [(r[0], r[1]) for r in rows]
-
-    def delete_learned_response(self, chat_id, trigger):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("DELETE FROM learned_responses WHERE chat_id = ? AND trigger_pattern = ?", (chat_id, trigger))
-            d = c.rowcount > 0
-            conn.commit()
-            conn.close()
-            return d
-
-    def increment_learned_usage(self, chat_id, trigger):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("UPDATE learned_responses SET times_used = times_used + 1 WHERE chat_id = ? AND trigger_pattern = ?", (chat_id, trigger))
-            conn.commit()
-            conn.close()
-
-    # ═══ سجل الألعاب ═══
-    def update_game_score(self, chat_id, user_id, game_type, points=1):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT INTO game_scores (chat_id, user_id, game_type, score) VALUES (?, ?, ?, ?) ON CONFLICT(chat_id, user_id, game_type) DO UPDATE SET score = score + ?, played_at = CURRENT_TIMESTAMP",
-                     (chat_id, user_id, game_type, points, points))
-            conn.commit()
-            conn.close()
-
-    def get_game_leaderboard(self, chat_id, game_type=None, limit=10):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            if game_type:
-                c.execute("SELECT user_id, score FROM game_scores WHERE chat_id = ? AND game_type = ? ORDER BY score DESC LIMIT ?", (chat_id, game_type, limit))
-            else:
-                c.execute("SELECT user_id, SUM(score) as total FROM game_scores WHERE chat_id = ? GROUP BY user_id ORDER BY total DESC LIMIT ?", (chat_id, limit))
-            rows = c.fetchall()
-            conn.close()
-            return [(r[0], r[1]) for r in rows]
-
-    # ═══ تفاعلات الرسائل ═══
-    def add_reaction_received(self, chat_id, user_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT INTO reaction_stats (chat_id, user_id, reactions_received) VALUES (?, ?, 1) ON CONFLICT(chat_id, user_id) DO UPDATE SET reactions_received = reactions_received + 1",
-                     (chat_id, user_id))
-            conn.commit()
-            conn.close()
-
-    def add_reaction_given(self, chat_id, user_id):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("INSERT INTO reaction_stats (chat_id, user_id, reactions_given) VALUES (?, ?, 1) ON CONFLICT(chat_id, user_id) DO UPDATE SET reactions_given = reactions_given + 1",
-                     (chat_id, user_id))
-            conn.commit()
-            conn.close()
-
-    def get_reaction_leaderboard(self, chat_id, limit=10):
-        with self.lock:
-            conn = self._get_conn()
-            c = conn.cursor()
-            c.execute("SELECT user_id, reactions_received FROM reaction_stats WHERE chat_id = ? ORDER BY reactions_received DESC LIMIT ?", (chat_id, limit))
-            rows = c.fetchall()
-            conn.close()
-            return [(r[0], r[1]) for r in rows]
-
 
 db = Database(DB_PATH)
-
-# ═════════════════════════════════════════════════════════════════
-# ثوابت الأمان - فلترة مفاتيح الإعدادات والإحصائيات
-# ═════════════════════════════════════════════════════════════════
-VALID_SETTING_KEYS = {
-    "welcome_msg", "rules", "maintenance_mode", "log_channel_id",
-    "anti_spam", "anti_flood", "anti_link", "anti_badword", "anti_raid",
-    "anti_bot", "anti_channel", "anti_forward", "anti_username",
-    "anti_arabic", "anti_emoji", "anti_phone", "anti_longmsg", "anti_edit",
-    "report_enabled", "captcha_enabled", "max_flood_msgs", "flood_interval",
-    "raid_threshold", "raid_action", "link_action", "warn_action",
-    "auto_delete", "slow_mode", "max_msg_length", "ai_reply",
-    "absence_mode", "auto_welcome", "welcome_back_msg",
-    "bot_communication", "anti_spoof", "auto_translate", "level_system",
-    "learn_responses", "group_language",
-}
-
-VALID_STAT_KEYS = {
-    "total_messages", "total_joins", "total_leaves", "total_bans",
-    "total_mutes", "total_warns", "total_deleted", "total_kicks",
-    "total_raids_blocked", "total_links_blocked", "total_spam_blocked",
-    "total_flood_blocked",
-}
-
-# ═════════════════════════════════════════════════════════════════
-# ثوابت نظام المستويات
-# ═════════════════════════════════════════════════════════════════
-LEVEL_NAMES = {
-    1: "مبتدئ", 2: "قادم جديد", 3: "نشيط", 4: "متقدم", 5: "محترف",
-    6: "خبير", 7: "مبدع", 8: "قائد", 9: "أسطورة", 10: "بطل",
-    11: "فارس", 12: "بطل محترف", 13: "صانع السلام", 14: "حكيم",
-    15: "مرشد", 16: "خبير متقدم", 17: "بطل المجتمع", 18: "فارس الظلام",
-    19: "حارس المجموعة", 20: "ملك الحوار", 21: "إمبراطور", 22: "نجم ساطع",
-    23: "عملاق", 24: "صانع التاريخ", 25: "أسطورة حية", 26: "حامي العرش",
-    27: "سيد الحكمة", 28: "بطل الأبطال", 29: "فخر المجموعة", 30: "القمة",
-    31: "سيد السادة", 32: "حاكم", 33: "ملك متوج", 34: "إمبراطور عظيم",
-    35: "أسطورة الخالدين", 36: "صانع المعجزات", 37: "حارس الأبدية",
-    38: "سيد الكون", 39: "فوق البشر", 40: "نصف إله",
-    41: "الأسطورة المطلقة", 42: "المعلم الأكبر", 43: "حكيم الأبدية",
-    44: "سيد كل الأزمنة", 45: "المنتهي", 46: "ما وراء الخيال",
-    47: "القوة المطلقة", 48: "الأزلي", 49: "المطلق", 50: "المطور 👑",
-}
-LEVEL_XP_BASE = 100
-
-TRIVIA_QUESTIONS = [
-    {"q": "ما هي عاصمة السعودية؟", "a": "الرياض", "opts": ["الرياض", "جدة", "مكة", "المدينة"]},
-    {"q": "كم عدد أحرف اللغة العربية؟", "a": "28", "opts": ["28", "26", "30", "29"]},
-    {"q": "ما هو أكبر كوكب في المجموعة الشمسية؟", "a": "المشتري", "opts": ["المشتري", "زحل", "الأرض", "المريخ"]},
-    {"q": "من اخترع الهاتف؟", "a": "بل", "opts": ["بل", "إديسون", "تسلا", "نيوتن"]},
-    {"q": "ما هي أطول نهر في العالم؟", "a": "النيل", "opts": ["النيل", "الأمازون", "المسيسيبي", "اليانغتسي"]},
-    {"q": "كم عدد قارات العالم؟", "a": "7", "opts": ["7", "6", "5", "8"]},
-    {"q": "ما هو العنصر الكيميائي الأكثر وفرة في الكون؟", "a": "الهيدروجين", "opts": ["الهيدروجين", "الأكسجين", "الكربون", "الهيليوم"]},
-    {"q": "في أي سنة هبط الإنسان على القمر؟", "a": "1969", "opts": ["1969", "1972", "1965", "1970"]},
-]
 
 # ═════════════════════════════════════════════════════════════════
 # ثوابت
@@ -1275,10 +1020,6 @@ def kb_main(is_adm=False):
          InlineKeyboardButton("🚨 أخرى", callback_data="menu_other")],
         [InlineKeyboardButton("🧹 التنظيف", callback_data="menu_cleanup"),
          InlineKeyboardButton("📨 الرسائل", callback_data="menu_messages")],
-        [InlineKeyboardButton("🤖 شبكة البوتات", callback_data="menu_botnet"),
-         InlineKeyboardButton("🏅 المستوى", callback_data="menu_levels")],
-        [InlineKeyboardButton("🎮 الألعاب", callback_data="menu_games"),
-         InlineKeyboardButton("🏆 المتصدرين", callback_data="menu_leaderboard")],
         [InlineKeyboardButton("👤 معلوماتي", callback_data="act_me"),
          InlineKeyboardButton("📋 القوانين", callback_data="act_rules")],
     ]
@@ -1564,46 +1305,6 @@ def kb_blacklist():
         [InlineKeyboardButton("🔙 حماية", callback_data="menu_protection")]
     ])
 
-def kb_botnet(chat_id):
-    s = db.get_settings(chat_id)
-    bots = db.get_bot_network(chat_id)
-    bot_list = "\n".join([f"• @{b['bot_name']} ({'✅' if b['is_active'] else '❌'})" for b in bots]) if bots else "لا توجد بوتات متصلة"
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ إضافة بوت مساعد", callback_data="bn_add"),
-         InlineKeyboardButton("➖ إزالة بوت", callback_data="bn_remove")],
-        [InlineKeyboardButton(f"{'✅' if s.get('bot_communication',0) else '❌'} تواصل البوتات", callback_data="tog_botcomm")],
-        [InlineKeyboardButton("📋 عرض البوتات المتصلة", callback_data="bn_show")],
-        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ])
-
-def kb_levels():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏅 بطاقتي", callback_data="lvl_mycard"),
-         InlineKeyboardButton("📊 ترتيب المستويات", callback_data="lvl_rank")],
-        [InlineKeyboardButton(f"{'✅' if db.get_settings(0).get('level_system',0) else '❌'} نظام المستويات", callback_data="tog_levelsys")],
-        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ])
-
-def kb_games():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🧠 مسابقة ثقافية", callback_data="game_trivia"),
-         InlineKeyboardButton("🔢 تخمين الرقم", callback_data="game_guess")],
-        [InlineKeyboardButton("🔗 لعبة الكلمات", callback_data="game_wordchain"),
-         InlineKeyboardButton("🎲 حظ وسعادة", callback_data="game_luck")],
-        [InlineKeyboardButton("🏆 نتائج الألعاب", callback_data="game_scores")],
-        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ])
-
-def kb_leaderboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏅 ترتيب المستويات", callback_data="lb_levels"),
-         InlineKeyboardButton("💬 ترتيب الرسائل", callback_data="lb_messages")],
-        [InlineKeyboardButton("⭐ ترتيب السمعة", callback_data="lb_reputation"),
-         InlineKeyboardButton("🎯 ترتيب الألعاب", callback_data="lb_games")],
-        [InlineKeyboardButton("❤️ ترتيب التفاعلات", callback_data="lb_reactions")],
-        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
-    ])
-
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -1619,7 +1320,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == OWNER_ID:
         is_adm = True
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v11.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v10.0</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "🤖 <b>ذكاء اصطناعي</b> ردود ذكية تلقائية في المجموعة\n"
@@ -1628,10 +1329,9 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⏰ <b>جدولة رسائل</b> إرسال تلقائي في أوقات محددة\n"
         "🖤 <b>قائمة سوداء</b> حظر تلقائي دائم\n"
         "🌙 <b>وضع الغياب</b> إدارة تلقائية عند غياب المشرفين\n"
-        "🤖 <b>شبكة البوتات</b> تواصل وتنسيق مع البوتات المساعدة\n"
-        "🏅 <b>نظام المستويات</b> تقدم واكسب XP بكل رسالة\n"
-        "🎮 <b>ألعاب جماعية</b> مسابقات وتحديات ممتعة\n"
-        "🏆 <b>لوحة المتصدرين</b> تنافس على المراكز الأولى\n"
+        "🆕 <b>نسخ احتياطي</b> تصدير واستيراد الإعدادات\n"
+        "🔔 <b>تنبيهات المشرفين</b> إشعار فوري عند الحاجة\n"
+        "🎲 <b>ألعاب وترفيه</b> ألعاب جماعية ممتعة\n"
         "📝 <b>استطلاعات</b> تصويت جماعي\n"
         "🎫 <b>نظام تذاكر</b> للبلاغات والدعم الفني\n\n"
         "👇 اختر أي قسم من الأزرار أدناه:"
@@ -1666,7 +1366,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ═══ القائمة الرئيسية ═══
         if data == "back":
             await safe_edit(query,
-                "🛡️ <b>بوت إدارة المجموعات المتكامل v11.0</b>\n\n"
+                "🛡️ <b>بوت إدارة المجموعات المتكامل v10.0</b>\n\n"
                 "🔐 حماية متقدمة | ⚡ إدارة ذكية | 🤖 ذكاء اصطناعي\n\n"
                 "👇 اختر أي قسم:",
                 reply_markup=kb_main(is_adm or is_owner))
@@ -1759,245 +1459,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_owner:
                 await safe_answer(query, "👑 للمالك فقط!", show_alert=True); return
             await safe_edit(query, "👑 <b>أدوات المالك</b>:", reply_markup=kb_owner())
-
-        # ═══ شبكة البوتات ═══
-        elif data == "menu_botnet":
-            if not is_adm:
-                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
-            bots = db.get_bot_network(chat.id)
-            bot_list = "\n".join([f"• {b['bot_name']} - {'✅ نشط' if b['is_active'] else '❌ معطل'}" for b in bots]) if bots else "لا توجد بوتات متصلة"
-            s = db.get_settings(chat.id)
-            comm_status = "✅ مفعّل" if s.get('bot_communication', 0) else "❌ معطل"
-            await safe_edit(query,
-                f"🤖 <b>شبكة البوتات</b>\n\n"
-                f"📡 حالة التواصل: {comm_status}\n"
-                f"🤖 البوتات المتصلة:\n{bot_list}\n\n"
-                f"يمكنك ربط البوتات المساعدة للتواصل والتنسيق بينها تلقائياً",
-                reply_markup=kb_botnet(chat.id))
-
-        elif data == "bn_add":
-            if not is_adm:
-                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
-            context.user_data["waiting"] = "add_bot"
-            await safe_edit(query,
-                "➕ <b>إضافة بوت مساعد</b>\n\nأرسل معرف البوت (مثال: @MyHelperBot) أو أعد توجيه رسالة من البوت:",
-                reply_markup=kb_back_cancel())
-
-        elif data == "bn_remove":
-            if not is_adm:
-                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
-            context.user_data["waiting"] = "remove_bot"
-            await safe_edit(query,
-                "➖ <b>إزالة بوت</b>\n\nأرسل معرف البوت الذي تريد إزالته:",
-                reply_markup=kb_back_cancel())
-
-        elif data == "bn_show":
-            bots = db.get_bot_network(chat.id)
-            if not bots:
-                await safe_answer(query, "📋 لا توجد بوتات متصلة", show_alert=True); return
-            bot_text = "🤖 <b>البوتات المتصلة:</b>\n\n"
-            for i, b in enumerate(bots, 1):
-                status = "✅ نشط" if b['is_active'] else "❌ معطل"
-                bot_text += f"{i}. {b['bot_name']} - {status}\n"
-            await safe_edit(query, bot_text, reply_markup=kb_botnet(chat.id))
-
-        elif data == "tog_botcomm":
-            if not is_adm:
-                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
-            s = db.get_settings(chat.id)
-            new_val = 0 if s.get('bot_communication', 0) else 1
-            db.update_setting(chat.id, 'bot_communication', new_val)
-            status = "✅ مفعّل" if new_val else "❌ معطل"
-            await safe_edit(query,
-                f"🤖 <b>شبكة البوتات</b>\n\n📡 تواصل البوتات: {status}",
-                reply_markup=kb_botnet(chat.id))
-
-        # ═══ نظام المستويات ═══
-        elif data == "menu_levels":
-            await safe_edit(query,
-                "🏅 <b>نظام المستويات</b>\n\nاكسب نقاط خبرة (XP) بكل رسالة ترسلها وتقدم في المستويات!",
-                reply_markup=kb_levels())
-
-        elif data == "lvl_mycard":
-            lvl_data = db.get_user_level(chat.id, user_id)
-            level = lvl_data['level']
-            xp = lvl_data['xp']
-            next_xp = LEVEL_XP_BASE * (level ** 2)
-            level_name = LEVEL_NAMES.get(level, f"مستوى {level}")
-            user = query.from_user
-            msg_count = db.get_msg_count(chat.id, user_id)
-            progress = min(100, int((xp / next_xp) * 100)) if next_xp > 0 else 100
-            bar_filled = int(progress / 10)
-            bar = "▓" * bar_filled + "░" * (10 - bar_filled)
-            card_text = (
-                f"🏅 <b>بطاقة المستوى</b>\n\n"
-                f"👤 الاسم: {html_escape(user.first_name)}\n"
-                f"🏅 المستوى: {level} - {level_name}\n"
-                f"⭐ XP: {xp}/{next_xp}\n"
-                f"📊 التقدم: [{bar}] {progress}%\n"
-                f"💬 الرسائل: {msg_count}\n"
-            )
-            await safe_edit(query, card_text, reply_markup=kb_levels())
-
-        elif data == "lvl_rank":
-            top = db.get_level_leaderboard(chat.id, 10)
-            if not top:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            rank_text = "🏅 <b>ترتيب المستويات</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, xp, level) in enumerate(top, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                level_name = LEVEL_NAMES.get(level, f"مستوى {level}")
-                rank_text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - Lv.{level} {level_name} ({xp} XP)\n"
-            await safe_edit(query, rank_text, reply_markup=kb_levels())
-
-        elif data == "tog_levelsys":
-            if not is_adm:
-                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
-            s = db.get_settings(chat.id)
-            new_val = 0 if s.get('level_system', 0) else 1
-            db.update_setting(chat.id, 'level_system', new_val)
-            status = "✅ مفعّل" if new_val else "❌ معطل"
-            await safe_edit(query,
-                f"🏅 <b>نظام المستويات: {status}</b>",
-                reply_markup=kb_levels())
-
-        # ═══ الألعاب ═══
-        elif data == "menu_games":
-            await safe_edit(query,
-                "🎮 <b>الألعاب الجماعية</b>\n\nالعب مع أعضاء المجموعة واكسب نقاط!",
-                reply_markup=kb_games())
-
-        elif data == "game_trivia":
-            q = random.choice(TRIVIA_QUESTIONS)
-            buttons = []
-            row = []
-            for opt in q['opts']:
-                row.append(InlineKeyboardButton(opt, callback_data=f"trivia_{opt}_{q['a']}"))
-                if len(row) == 2:
-                    buttons.append(row)
-                    row = []
-            if row:
-                buttons.append(row)
-            buttons.append([InlineKeyboardButton("🔙 الألعاب", callback_data="menu_games")])
-            await safe_edit(query, f"🧠 <b>مسابقة ثقافية</b>\n\n❓ {q['q']}", reply_markup=InlineKeyboardMarkup(buttons))
-
-        elif data.startswith("trivia_"):
-            parts = data[7:].rsplit("_", 1)
-            if len(parts) == 2:
-                chosen, answer = parts
-                if chosen == answer:
-                    db.update_game_score(chat.id, user_id, "trivia", 3)
-                    await safe_answer(query, "✅ إجابة صحيحة! +3 نقاط", show_alert=True)
-                else:
-                    await safe_answer(query, f"❌ إجابة خاطئة! الإجابة الصحيحة: {answer}", show_alert=True)
-
-        elif data == "game_guess":
-            target = random.randint(1, 100)
-            context.chat_data["guess_number"] = target
-            context.chat_data["guess_active"] = True
-            context.chat_data["guess_attempts"] = {}
-            await safe_edit(query,
-                "🔢 <b>لعبة تخمين الرقم</b>\n\nخمنت رقم بين 1 و 100\nاكتب رقمك في الشات!",
-                reply_markup=kb_games())
-
-        elif data == "game_wordchain":
-            context.chat_data["word_chain"] = []
-            context.chat_data["chain_active"] = True
-            await safe_edit(query,
-                "🔗 <b>لعبة سلسلة الكلمات</b>\n\nاكتب كلمة وسيأتي الشخص التالي بكلمة تبدأ بآخر حرف من كلمتك!",
-                reply_markup=kb_games())
-
-        elif data == "game_luck":
-            luck_score = random.randint(1, 100)
-            if luck_score >= 90:
-                result = "🌟 حظ استثنائي! أنت محظوظ جداً!"
-                points = 5
-            elif luck_score >= 70:
-                result = "✨ حظ جيد! أنت محظوظ!"
-                points = 3
-            elif luck_score >= 40:
-                result = "😐 حظ عادي... يمكن أفضل المرة القادمة"
-                points = 1
-            else:
-                result = "😢 حظ سيء... حاول مرة أخرى!"
-                points = 0
-            db.update_game_score(chat.id, user_id, "luck", points)
-            await safe_edit(query,
-                f"🎲 <b>لعبة الحظ والسعادة</b>\n\n📊 نتيجتك: {luck_score}/100\n{result}\nنقاط: +{points}",
-                reply_markup=kb_games())
-
-        elif data == "game_scores":
-            scores = db.get_game_leaderboard(chat.id)
-            if not scores:
-                await safe_answer(query, "📋 لا توجد نتائج بعد", show_alert=True); return
-            score_text = "🏆 <b>نتائج الألعاب</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, score) in enumerate(scores, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                score_text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {score} نقطة\n"
-            await safe_edit(query, score_text, reply_markup=kb_games())
-
-        # ═══ المتصدرين ═══
-        elif data == "menu_leaderboard":
-            await safe_edit(query,
-                "🏆 <b>لوحة المتصدرين</b>\n\nاختر التصنيف:",
-                reply_markup=kb_leaderboard())
-
-        elif data == "lb_levels":
-            top = db.get_level_leaderboard(chat.id, 10)
-            if not top:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            text = "🏅 <b>ترتيب المستويات</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, xp, level) in enumerate(top, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - Lv.{level} ({xp} XP)\n"
-            await safe_edit(query, text, reply_markup=kb_leaderboard())
-
-        elif data == "lb_messages":
-            top = db.get_top_msg(chat.id, 10)
-            if not top:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            text = "💬 <b>ترتيب الرسائل</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, count) in enumerate(top, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {count} رسالة\n"
-            await safe_edit(query, text, reply_markup=kb_leaderboard())
-
-        elif data == "lb_reputation":
-            top = db.get_top_rep(chat.id, 10)
-            if not top:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            text = "⭐ <b>ترتيب السمعة</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, rep) in enumerate(top, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {rep} نقطة\n"
-            await safe_edit(query, text, reply_markup=kb_leaderboard())
-
-        elif data == "lb_games":
-            scores = db.get_game_leaderboard(chat.id)
-            if not scores:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            text = "🎯 <b>ترتيب الألعاب</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, score) in enumerate(scores, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {score} نقطة\n"
-            await safe_edit(query, text, reply_markup=kb_leaderboard())
-
-        elif data == "lb_reactions":
-            top = db.get_reaction_leaderboard(chat.id, 10)
-            if not top:
-                await safe_answer(query, "📋 لا توجد بيانات بعد", show_alert=True); return
-            text = "❤️ <b>ترتيب التفاعلات</b>\n\n"
-            medals = ["🥇", "🥈", "🥉"]
-            for i, (uid, rxn) in enumerate(top, 1):
-                medal = medals[i-1] if i <= 3 else f"{i}."
-                text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {rxn} تفاعل\n"
-            await safe_edit(query, text, reply_markup=kb_leaderboard())
 
         # ═══ تبديل الحماية ═══
         elif data.startswith("tog_"):
@@ -3240,36 +2701,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text("❌ غير موجود في القائمة")
             context.user_data.pop("waiting", None); return
 
-        # إضافة بوت للشبكة
-        elif waiting == "add_bot":
-            if not is_adm:
-                context.user_data.pop("waiting", None); return
-            bot_username = text.strip().lstrip('@')
-            if target and target.from_user and target.from_user.is_bot:
-                bot_id = target.from_user.id
-                bot_name = target.from_user.username or target.from_user.first_name
-                db.add_bot_network(chat.id, bot_id, bot_name, user_id)
-                await msg.reply_text(f"🤖 تم إضافة البوت @{bot_name} لشبكة البوتات ✅")
-            else:
-                await msg.reply_text("❌ أعد توجيه رسالة من البوت الذي تريد إضافته")
-            context.user_data.pop("waiting", None); return
-
-        # إزالة بوت من الشبكة
-        elif waiting == "remove_bot":
-            if not is_adm:
-                context.user_data.pop("waiting", None); return
-            bots = db.get_bot_network(chat.id)
-            removed = False
-            for b in bots:
-                if b['bot_name'].lower() == text.strip().lstrip('@').lower():
-                    db.remove_bot_network(chat.id, b['bot_id'])
-                    await msg.reply_text(f"➖ تم إزالة البوت @{b['bot_name']} ✅")
-                    removed = True
-                    break
-            if not removed:
-                await msg.reply_text("❌ البوت غير موجود في الشبكة")
-            context.user_data.pop("waiting", None); return
-
         # معلومات مستخدم
         elif waiting == "userinfo":
             if target_id:
@@ -3751,74 +3182,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # عداد الرسائل
     db.increment_msg_count(chat.id, user_id)
     db.increment_stat(chat.id, "total_messages")
-
-    # ═══ نظام المستويات - إضافة XP ═══
-    settings = db.get_settings(chat.id)
-    if settings.get('level_system', 0) and not user.is_bot:
-        xp, level, leveled_up = db.add_xp(chat.id, user_id, random.randint(1, 3))
-        if leveled_up:
-            level_name = LEVEL_NAMES.get(level, f"مستوى {level}")
-            try:
-                await chat.send_message(
-                    f"🎉 مبروك! {mention(user_id, user.first_name)} وصل المستوى {level} - {level_name}!",
-                    parse_mode="HTML"
-                )
-            except: pass
-
-    # ═══ تواصل البوتات ═══
-    if user.is_bot and user.id != context.bot.id:
-        if settings.get('bot_communication', 0) and db.is_bot_allowed(chat.id, user.id):
-            # البوت مسجل في الشبكة - يمكنه التواصل
-            try:
-                admins = await chat.get_administrators()
-                for admin in admins:
-                    if not admin.user.is_bot:
-                        try:
-                            await context.bot.send_message(
-                                chat_id=admin.user.id,
-                                text=f"🤖 رسالة من البوت @{user.username or user.first_name} في مجموعة {chat.title}:\n{text[:200]}",
-                            )
-                        except: pass
-            except: pass
-
-    # ═══ تعلّم الردود من المشرفين ═══
-    if settings.get('learn_responses', 0) and is_adm and target and target.from_user and not target.from_user.is_bot and text:
-        trigger = (target.text or "")[:100]
-        if trigger:
-            db.add_learned_response(chat.id, trigger, text, user_id)
-
-    # ═══ لعبة تخمين الرقم ═══
-    if context.chat_data.get("guess_active") and text:
-        try:
-            guess = int(text.strip())
-            target_num = context.chat_data.get("guess_number", 0)
-            if guess == target_num:
-                db.update_game_score(chat.id, user_id, "guess", 5)
-                await msg.reply_text(f"🎉 أحسنت! الرقم هو {target_num}! +5 نقاط")
-                context.chat_data["guess_active"] = False
-            elif guess < target_num:
-                await msg.reply_text("⬆️ الرقم أكبر!")
-            else:
-                await msg.reply_text("⬇️ الرقم أصغر!")
-        except ValueError:
-            pass
-
-    # ═══ لعبة سلسلة الكلمات ═══
-    if context.chat_data.get("chain_active") and text and not user.is_bot:
-        chain = context.chat_data.get("word_chain", [])
-        word = text.strip()
-        if len(word) >= 2:
-            if chain:
-                last_word = chain[-1]
-                if word[0] == last_word[-1]:
-                    chain.append(word)
-                    context.chat_data["word_chain"] = chain[-20:]
-                    db.update_game_score(chat.id, user_id, "wordchain", 1)
-                else:
-                    await msg.reply_text(f"❌ الكلمة يجب أن تبدأ بحرف '{last_word[-1]}'")
-            else:
-                chain.append(word)
-                context.chat_data["word_chain"] = chain
 
     # حذف تلقائي
     auto_del = settings.get('auto_delete', 0)
@@ -4902,7 +4265,7 @@ def build_and_run():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v11.0 يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v10.0 يعمل الآن!")
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
@@ -4911,22 +4274,19 @@ def build_and_run():
         
         # تجاهل أخطاء Conflict - البوت سيعيد التشغيل تلقائياً
         if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
-            logger.warning("⚠️ خطأ Conflict - سيتم تجاهله والتشغيل بشكل طبيعي...")
+            logger.warning("⚠️ خطأ Conflict - سيتم إعادة التشغيل التلقائي...")
             return
         
-        # تجاهل أخطاء الشبكة المؤقتة
-        if "TimedOut" in error_str or "NetworkError" in error_str:
-            logger.warning("⚠️ خطأ شبكة مؤقت - تم التجاهل")
-            return
-        
-        # تجاهل أخطاء الرسائل المحذوفة
-        if "Message to delete not found" in error_str or "Message is not modified" in error_str:
-            return
+        if update and hasattr(update, 'effective_chat') and update.effective_chat:
+            try:
+                await update.effective_chat.send_message("❌ حدث خطأ غير متوقع. تم تسجيله للمراجعة.")
+            except:
+                pass
 
     app.add_error_handler(error_handler)
     logger.info("✅ Global error handler registered")
     logger.info("✅ Bot started successfully! 🚀")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    app.run_polling(drop_pending_updates=True)
 
 
 def main():
@@ -4945,24 +4305,20 @@ def main():
         try:
             build_and_run()
             # إذا وصلنا هنا، فـ run_polling توقف طبيعياً
-            logger.warning("⚠️ run_polling stopped normally - restarting in 15 seconds...")
-            time.sleep(15)
-            retry_count = 0  # إعادة تعيين العداد عند التشغيل الناجح
-        except Conflict as e:
-            retry_count += 1
-            wait_time = min(60, 30 + (retry_count * 10))  # زيادة تدريجية حتى 60 ثانية
-            logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting {wait_time}s before restart...")
-            kill_existing_instances()  # قتل المثيلات المتعارضة
-            time.sleep(wait_time)
+            logger.warning("⚠️ run_polling stopped normally - restarting in 10 seconds...")
+            time.sleep(10)
         except Exception as e:
             error_str = str(e)
             retry_count += 1
-            if "NetworkError" in error_str or "TimedOut" in error_str:
-                logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 15 seconds...")
-                time.sleep(15)
+            if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
+                logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting 30 seconds before restart...")
+                time.sleep(30)  # زيادة الانتظار
+            elif "NetworkError" in error_str or "TimedOut" in error_str:
+                logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 10 seconds...")
+                time.sleep(10)
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
-                time.sleep(15)
+                time.sleep(10)
 
 
 async def _background_tasks(app):

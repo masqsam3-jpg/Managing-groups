@@ -3108,17 +3108,27 @@ def main():
     flask_thread.start()
     logger.info("✅ خادم Flask بدأ")
 
-    # بناء التطبيق
-    app = Application.builder().token(TOKEN).build()
+    # بناء التطبيق مع إعدادات مهلة طويلة
+    app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
 
     # ═══ إصلاح مشكلة Conflict: حذف أي webhook أو getUpdates سابق ═══
     async def post_init(application):
         """يتم تنفيذه بعد بناء التطبيق وقبل بدء polling - يمنع خطأ Conflict"""
+        # انتظار لضمان توقف أي نسخة سابقة
+        logger.info("⏳ Waiting 5 seconds for old instance to stop...")
+        await asyncio.sleep(5)
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("✅ تم حذف أي webhook سابق")
         except Exception as e:
             logger.warning(f"⚠️ لم يتم حذف webhook: {e}")
+        # محاولة ثانية بعد انتظار
+        await asyncio.sleep(3)
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("✅ تم حذف webhook بنجاح (المحاولة الثانية)")
+        except Exception as e:
+            logger.warning(f"⚠️ محاولة ثانية فشلت: {e}")
         # تعيين قائمة الأوامر في تيليجرام
         try:
             await application.bot.set_my_commands([

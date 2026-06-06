@@ -244,14 +244,14 @@ def run_flask():
     _flask_ready.set()
     logger.info(f"🌐 Starting production server on port {port}")
     try:
-        serve(web_app, host='0.0.0.0', port=port, _quiet=True)
+        serve(web_app, host='0.0.0.0', port=port)
     except Exception as e:
         logger.error(f"❌ Flask server error: {e}")
         # محاولة إعادة التشغيل على منفذ بديل
         try:
             alt_port = port + 1
             logger.info(f"🌐 Trying alternate port {alt_port}")
-            serve(web_app, host='0.0.0.0', port=alt_port, _quiet=True)
+            serve(web_app, host='0.0.0.0', port=alt_port)
         except Exception as e2:
             logger.critical(f"❌ Flask server failed completely: {e2}")
 
@@ -366,21 +366,35 @@ def polling_watchdog():
 # ═══ نظام مراقبة الذاكرة والموارد ═══
 def resource_monitor():
     """يراقب استهلاك الموارد ويعيد التشغيل إذا كان هناك تسرب ذاكرة"""
-    import resource as res_module
     time.sleep(60)  # انتظر حتى يستقر البوت
 
     while True:
         time.sleep(300)  # فحص كل 5 دقائق
         try:
-            # فحص استخدام الذاكرة
-            mem_mb = res_module.getrusage(res_module.RUSAGE_SELF).ru_maxrss / 1024  # KB to MB
+            # فحص استخدام الذاكرة عبر /proc/self/status (Linux فقط)
+            mem_mb = 0
+            try:
+                with open('/proc/self/status', 'r') as f:
+                    for line in f:
+                        if line.startswith('VmRSS:'):  # Resident Set Size
+                            mem_kb = int(line.split()[1])
+                            mem_mb = mem_kb / 1024
+                            break
+            except Exception:
+                # طريقة بديلة باستخدام resource module
+                try:
+                    import resource as res_module
+                    mem_mb = res_module.getrusage(res_module.RUSAGE_SELF).ru_maxrss / 1024
+                except Exception:
+                    pass
+
             if mem_mb > 500:  # أكثر من 500 ميجابايت
                 logger.critical(f"🔴 Memory usage too high: {mem_mb:.1f}MB - restarting!")
                 release_singleton_lock()
                 os._exit(1)
             elif mem_mb > 300:
                 logger.warning(f"⚠️ High memory usage: {mem_mb:.1f}MB")
-            else:
+            elif mem_mb > 0:
                 logger.info(f"💾 Memory usage: {mem_mb:.1f}MB ✅")
         except Exception as e:
             logger.warning(f"⚠️ Resource monitor error: {e}")

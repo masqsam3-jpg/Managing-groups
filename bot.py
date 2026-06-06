@@ -3098,6 +3098,24 @@ async def check_scheduled_messages(context: ContextTypes.DEFAULT_TYPE):
 # الدالة الرئيسية - مع إصلاح مشكلة Conflict
 # ═════════════════════════════════════════════════════════════════
 
+def kill_existing_instances():
+    """قتل أي مثيل سابق للبوت لمنع خطأ Conflict"""
+    import requests as req
+    api_url = f"https://api.telegram.org/bot{TOKEN}"
+    try:
+        resp = req.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+        logger.info(f"✅ deleteWebhook: {resp.status_code}")
+    except Exception as e:
+        logger.warning(f"⚠️ deleteWebhook failed: {e}")
+    time.sleep(2)
+    try:
+        req.post(f"{api_url}/getUpdates", json={"offset": -1, "timeout": 0}, timeout=10)
+        logger.info("✅ Cleared pending updates")
+    except Exception as e:
+        logger.warning(f"⚠️ Clear updates failed: {e}")
+    time.sleep(2)
+
+
 def main():
     if not TOKEN:
         logger.error("❌ لم يتم تعيين TOKEN! قم بتعيين متغير البيئة TOKEN")
@@ -3108,28 +3126,8 @@ def main():
     flask_thread.start()
     logger.info("✅ خادم Flask بدأ")
 
-    # ═══ إصلاح جذري لمشكلة Conflict: حذف webhook قبل بناء التطبيق ═══
-    import requests
-    logger.info("⏳ Force killing any existing bot instance...")
-    api_url = f"https://api.telegram.org/bot{TOKEN}"
-    for attempt in range(5):
-        try:
-            # حذف webhook يوقف أي getUpdates قائم
-            requests.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
-            logger.info(f"✅ deleteWebhook attempt {attempt + 1} done")
-        except Exception as e:
-            logger.warning(f"⚠️ deleteWebhook attempt {attempt + 1} failed: {e}")
-        time.sleep(2)
-    
-    # استهلاك أي تحديثات معلقة
-    try:
-        requests.post(f"{api_url}/getUpdates", json={"offset": -1, "timeout": 0}, timeout=10)
-        logger.info("✅ Cleared pending updates")
-    except Exception as e:
-        logger.warning(f"⚠️ Clear updates failed: {e}")
-    
-    time.sleep(3)
-    logger.info("✅ Old instance should be stopped now")
+    # ═══ حل مشكلة Conflict: حذف webhook قبل بناء التطبيق ═══
+    kill_existing_instances()
 
     # بناء التطبيق مع إعدادات مهلة طويلة
     app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
@@ -3668,7 +3666,14 @@ def main():
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
-        logger.error(f"⚠️ Exception while handling an update: {context.error}")
+        error_str = str(context.error)
+        logger.error(f"⚠️ Exception while handling an update: {error_str}")
+        
+        # تجاهل أخطاء Conflict - البوت سيعيد التشغيل تلقائياً
+        if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
+            logger.warning("⚠️ خطأ Conflict - سيتم إعادة التشغيل التلقائي...")
+            return
+        
         if update and hasattr(update, 'effective_chat') and update.effective_chat:
             try:
                 await update.effective_chat.send_message("❌ حدث خطأ غير متوقع. تم تسجيله للمراجعة.")
@@ -3678,8 +3683,65 @@ def main():
     app.add_error_handler(error_handler)
     logger.info("✅ Global error handler registered")
 
-    logger.info("✅ Bot started successfully! 🚀")
-    app.run_polling(drop_pending_updates=True)
+    # ═══ نظام إعادة التشغيل التلقائي ═══
+    max_retries = 999  # إعادة تشغيل غير محدودة
+    for retry in range(max_retries):
+        try:
+            logger.info(f"✅ Bot started successfully! 🚀 (attempt {retry + 1})")
+            app.run_polling(drop_pending_updates=True, close_loop=False)
+            logger.warning("⚠️ run_polling stopped - restarting in 5 seconds...")
+        except Exception as e:
+            error_str = str(e)
+            if "Conflict" in error_str or "Terminated by other getUpdates" in error_str:
+                logger.warning(f"⚠️ Conflict error on attempt {retry + 1} - killing old instance and retrying...")
+                kill_existing_instances()
+                # إعادة بناء التطبيق
+                app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
+                app.post_init = post_init
+                # إعادة تسجيل المعالجات
+                app.add_handler(CommandHandler("start", start_cmd))
+                app.add_handler(CommandHandler("panel", panel_cmd))
+                app.add_handler(CommandHandler("help", help_cmd))
+                app.add_handler(CommandHandler("ban", cmd_ban))
+                app.add_handler(CommandHandler("unban", cmd_unban))
+                app.add_handler(CommandHandler("mute", cmd_mute))
+                app.add_handler(CommandHandler("unmute", cmd_unmute))
+                app.add_handler(CommandHandler("kick", cmd_kick))
+                app.add_handler(CommandHandler("warn", cmd_warn))
+                app.add_handler(CommandHandler("unwarn", cmd_unwarn))
+                app.add_handler(CommandHandler("warns", cmd_warns))
+                app.add_handler(CommandHandler("delwarn", cmd_delwarn))
+                app.add_handler(CommandHandler("del", cmd_del))
+                app.add_handler(CommandHandler("pin", cmd_pin))
+                app.add_handler(CommandHandler("rules", cmd_rules))
+                app.add_handler(CommandHandler("me", cmd_me))
+                app.add_handler(CommandHandler("info", cmd_info))
+                app.add_handler(CommandHandler("staff", cmd_staff))
+                app.add_handler(CommandHandler("badd", cmd_badd))
+                app.add_handler(CommandHandler("bdel", cmd_bdel))
+                app.add_handler(CommandHandler("geturl", cmd_geturl))
+                app.add_handler(CommandHandler("inactives", cmd_inactives))
+                app.add_handler(CommandHandler("listroles", cmd_listroles))
+                app.add_handler(CommandHandler("graphic", cmd_graphic))
+                app.add_handler(CommandHandler("send", cmd_send))
+                app.add_handler(CommandHandler("delban", cmd_unban))
+                app.add_handler(CommandHandler("delmute", cmd_unmute))
+                app.add_handler(CallbackQueryHandler(callback_handler))
+                app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+                app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE & ~filters.COMMAND, edited_message_handler))
+                app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, new_member_handler))
+                app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, left_member_handler))
+                # إعادة تسجيل جدولة المهام
+                try:
+                    if app.job_queue:
+                        app.job_queue.run_repeating(check_temp_mutes, interval=60, first=10)
+                        app.job_queue.run_repeating(check_scheduled_messages, interval=30, first=15)
+                except: pass
+                app.add_error_handler(error_handler)
+            else:
+                logger.error(f"❌ Unexpected error: {e}")
+        
+        time.sleep(5)
 
 
 async def _background_tasks(app):

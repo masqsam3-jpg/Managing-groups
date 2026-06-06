@@ -3641,6 +3641,20 @@ def main():
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
     logger.info("🛡️ بوت إدارة المجموعات v7.0 يعمل الآن!")
+    # ═══ معالج الأخطاء العام ═══
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
+        logger.error(f"⚠️ Exception while handling an update: {context.error}")
+        if update and hasattr(update, 'effective_chat') and update.effective_chat:
+            try:
+                await update.effective_chat.send_message("❌ حدث خطأ غير متوقع. تم تسجيله للمراجعة.")
+            except:
+                pass
+
+    app.add_error_handler(error_handler)
+    logger.info("✅ Global error handler registered")
+
+    logger.info("✅ Bot started successfully! 🚀")
     app.run_polling(drop_pending_updates=True)
 
 

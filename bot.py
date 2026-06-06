@@ -1607,7 +1607,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "act_unpin":
             if not is_adm: return
             try:
-                await chat.unpin_all_chat_messages()
+                await chat.unpin_all_messages()
                 await chat.send_message("📌 تم إلغاء تثبيت جميع الرسائل ✅")
             except: pass
         elif data == "act_setrules":
@@ -1636,26 +1636,27 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "act_repin":
             if not is_adm: return
             try:
-                pinned = await chat.get_pinned_messages()
-                if pinned:
-                    await pinned[0].unpin()
-                    await pinned[0].pin()
+                chat_info = await chat.get_chat()
+                if chat_info.pinned_message:
+                    pinned_msg = chat_info.pinned_message
+                    await chat.unpin_message(pinned_msg.message_id)
+                    await chat.pin_message(pinned_msg.message_id)
                     await chat.send_message("📌 تم إعادة تثبيت الرسالة ✅")
                 else:
                     await chat.send_message("❌ لا توجد رسائل مثبتة")
-            except: pass
+            except Exception as e:
+                await chat.send_message(f"❌ خطأ: {e}")
         elif data == "act_pinned":
             try:
-                pinned = await chat.get_pinned_messages()
-                if pinned:
-                    text = "📌 <b>الرسائل المثبتة:</b>\n\n"
-                    for i, msg in enumerate(pinned[:5], 1):
-                        preview = msg.text[:50] if msg.text else "(وسائط)"
-                        text += f"{i}. {preview}...\n"
+                chat_info = await chat.get_chat()
+                if chat_info.pinned_message:
+                    preview = chat_info.pinned_message.text[:100] if chat_info.pinned_message.text else "(وسائط)"
+                    text = f"📌 <b>الرسالة المثبتة:</b>\n\n{preview}"
                 else:
                     text = "📌 لا توجد رسائل مثبتة."
                 await safe_edit(query, text, reply_markup=kb_back())
-            except: pass
+            except Exception as e:
+                await safe_edit(query, f"❌ خطأ: {e}", reply_markup=kb_back())
         elif data == "act_geturl":
             try:
                 link = await chat.export_invite_link()

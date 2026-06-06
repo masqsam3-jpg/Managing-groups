@@ -4,8 +4,13 @@ __pycache__/
 *$py.class
 *.so
 *.egg-info/
+*.egg
 dist/
 build/
+
+# Compiled Python files
+*.pyc
+*.pyo
 
 # Database
 *.db
@@ -15,11 +20,17 @@ build/
 .env
 venv/
 .env.local
+.venv/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
 
 # OS
 .DS_Store
 Thumbs.db
+
+# Logs
+*.log

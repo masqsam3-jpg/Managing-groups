@@ -4829,15 +4829,40 @@ async def check_expired_captchas(context: ContextTypes.DEFAULT_TYPE):
 # الدالة الرئيسية - مع إصلاح مشكلة Conflict
 # ═════════════════════════════════════════════════════════════════
 
+async def kill_existing_instances():
+    """قتل أي مثيل سابق من البوت عن طريق حذف الـ webhook وتفريغ التحديثات المعلقة"""
+    import requests as req_lib
+    if not TOKEN:
+        return
+    api_url = f"https://api.telegram.org/bot{TOKEN}"
+    try:
+        # الخطوة 1: حذف أي webhook موجود
+        req_lib.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+        logger.info("✅ الخطوة 1: تم حذف الـ webhook")
+        await asyncio.sleep(2)
+        # الخطوة 2: تفريغ أي تحديثات معلقة
+        try:
+            req_lib.get(f"{api_url}/getUpdates?offset=-1", timeout=10)
+            logger.info("✅ الخطوة 2: تم تفريغ التحديثات المعلقة")
+        except Exception:
+            pass
+        # الخطوة 3: حذف الـ webhook مرة أخرى للتأكد
+        req_lib.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+        logger.info("✅ الخطوة 3: تم حذف الـ webhook مرة أخرى")
+        await asyncio.sleep(3)
+        logger.info("✅ تم تنظيف المثيلات السابقة بنجاح")
+    except Exception as e:
+        logger.warning(f"⚠️ خطأ أثناء تنظيف المثيلات السابقة: {e}")
+
+
 def build_application():
     """بناء التطبيق فقط (بدون تشغيل) - يسمح بالتحكم بشكل أفضل"""
-    # ═══ تعريف post_init قبل بناء التطبيق ═══
-    """بناء التطبيق وتشغيله - مع إعادة تشغيل تلقائي عند الفشل"""
-    kill_existing_instances()
 
     # ═══ تعريف post_init قبل بناء التطبيق ═══
     async def post_init(application):
         """يتم تنفيذه بعد بناء التطبيق وقبل بدء polling - يمنع خطأ Conflict"""
+        # تنظيف أي مثيل سابق أولاً
+        await kill_existing_instances()
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("✅ تم حذف أي webhook سابق (post_init)")

@@ -3108,27 +3108,41 @@ def main():
     flask_thread.start()
     logger.info("✅ خادم Flask بدأ")
 
+    # ═══ إصلاح جذري لمشكلة Conflict: حذف webhook قبل بناء التطبيق ═══
+    import requests
+    logger.info("⏳ Force killing any existing bot instance...")
+    api_url = f"https://api.telegram.org/bot{TOKEN}"
+    for attempt in range(5):
+        try:
+            # حذف webhook يوقف أي getUpdates قائم
+            requests.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
+            logger.info(f"✅ deleteWebhook attempt {attempt + 1} done")
+        except Exception as e:
+            logger.warning(f"⚠️ deleteWebhook attempt {attempt + 1} failed: {e}")
+        time.sleep(2)
+    
+    # استهلاك أي تحديثات معلقة
+    try:
+        requests.post(f"{api_url}/getUpdates", json={"offset": -1, "timeout": 0}, timeout=10)
+        logger.info("✅ Cleared pending updates")
+    except Exception as e:
+        logger.warning(f"⚠️ Clear updates failed: {e}")
+    
+    time.sleep(3)
+    logger.info("✅ Old instance should be stopped now")
+
     # بناء التطبيق مع إعدادات مهلة طويلة
     app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).connect_timeout(30).pool_timeout(30).build()
 
     # ═══ إصلاح مشكلة Conflict: حذف أي webhook أو getUpdates سابق ═══
     async def post_init(application):
         """يتم تنفيذه بعد بناء التطبيق وقبل بدء polling - يمنع خطأ Conflict"""
-        # انتظار لضمان توقف أي نسخة سابقة
-        logger.info("⏳ Waiting 5 seconds for old instance to stop...")
-        await asyncio.sleep(5)
+        # حذف webhook مرة أخرى للتأكد
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ تم حذف أي webhook سابق")
+            logger.info("✅ تم حذف أي webhook سابق (post_init)")
         except Exception as e:
             logger.warning(f"⚠️ لم يتم حذف webhook: {e}")
-        # محاولة ثانية بعد انتظار
-        await asyncio.sleep(3)
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("✅ تم حذف webhook بنجاح (المحاولة الثانية)")
-        except Exception as e:
-            logger.warning(f"⚠️ محاولة ثانية فشلت: {e}")
         # تعيين قائمة الأوامر في تيليجرام
         try:
             await application.bot.set_my_commands([

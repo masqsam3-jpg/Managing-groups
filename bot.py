@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  🛡️ بوت إدارة المجموعات المتكامل v11.0 - الإصدار الخارق 🛡️     ║
+║  🛡️ بوت إدارة المجموعات المتكامل v12.0 - الإصدار الخارق 🛡️     ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
@@ -29,6 +29,24 @@ from telegram.ext import (
 from telegram.constants import ChatMemberStatus, ParseMode
 from telegram.error import Conflict
 
+import signal as signal_module
+import sys
+import fcntl
+import io
+import math
+
+try:
+    import qrcode as qrcode_lib
+    HAS_QRCODE = True
+except ImportError:
+    HAS_QRCODE = False
+
+try:
+    from PIL import Image as PILImage
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
+
 # ═════════════════════════════════════════════════════════════════
 # إعداد السجلات
 # ═════════════════════════════════════════════════════════════════
@@ -49,6 +67,41 @@ DB_PATH = "bot_database.db"
 
 SUDO_USERS = {OWNER_ID}
 
+# ═══ نظام القفل الأحادي لمنع تكرار البوت ═══
+LOCK_FILE = "/tmp/bot_singleton.lock"
+_lock_file = None
+
+def acquire_singleton_lock():
+    """الحصول على قفل ملف لمنع تشغيل عدة مثيلات من البوت"""
+    global _lock_file
+    try:
+        _lock_file = open(LOCK_FILE, 'w')
+        fcntl.flock(_lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+        logger.info(f"✅ Singleton lock acquired (PID: {os.getpid()})")
+        return True
+    except (IOError, OSError):
+        logger.error("❌ مثيل آخر من البوت يعمل! جاري الانتظار...")
+        if _lock_file:
+            _lock_file.close()
+        return False
+
+def release_singleton_lock():
+    """تحرير قفل الملف"""
+    global _lock_file
+    try:
+        if _lock_file:
+            fcntl.flock(_lock_file, fcntl.LOCK_UN)
+            _lock_file.close()
+            try:
+                os.remove(LOCK_FILE)
+            except:
+                pass
+            logger.info("✅ Singleton lock released")
+    except:
+        pass
+
 # ═══ فحص المتغيرات الحرجة عند البدء ═══
 if not TOKEN:
     logger.critical("❌❌❌ متغير البيئة TOKEN غير موجود! البوت لن يعمل!")
@@ -66,7 +119,7 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v11.0",
+        "bot": "Group Manager v12.0",
         "token_set": bool(TOKEN),
         "uptime": True
     }), 200
@@ -299,6 +352,12 @@ class Database:
                 reactions_given INTEGER DEFAULT 0,
                 PRIMARY KEY(chat_id, user_id)
             )''')
+
+            # إدارة يوتيوب
+            c.execute("CREATE TABLE IF NOT EXISTS youtube_channels (chat_id INTEGER, channel_id TEXT, channel_name TEXT DEFAULT '', api_key TEXT DEFAULT '', subscriber_count INTEGER DEFAULT 0, video_count INTEGER DEFAULT 0, view_count INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1, added_by INTEGER, added_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(chat_id, channel_id))")
+            c.execute("CREATE TABLE IF NOT EXISTS youtube_videos (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT, video_id TEXT, title TEXT DEFAULT '', views INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, tracked_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS youtube_ideas (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT, idea_type TEXT DEFAULT 'script', content TEXT, generated_at TEXT DEFAULT CURRENT_TIMESTAMP, used INTEGER DEFAULT 0)")
+            c.execute("CREATE TABLE IF NOT EXISTS short_videos (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT DEFAULT '', topic TEXT, script TEXT DEFAULT '', image_prompts TEXT DEFAULT '', text_overlays TEXT DEFAULT '', status TEXT DEFAULT 'draft', created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             conn.commit()
             conn.close()
 
@@ -1033,6 +1092,81 @@ class Database:
             return [(r[0], r[1]) for r in rows]
 
 
+    # ═══ إدارة يوتيوب ═══
+    def add_youtube_channel(self, chat_id, channel_id, channel_name, api_key, added_by):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT OR REPLACE INTO youtube_channels (chat_id, channel_id, channel_name, api_key, added_by) VALUES (?, ?, ?, ?, ?)",
+                     (chat_id, channel_id, channel_name, api_key, added_by))
+            conn.commit()
+            conn.close()
+
+    def remove_youtube_channel(self, chat_id, channel_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM youtube_channels WHERE chat_id = ? AND channel_id = ?", (chat_id, channel_id))
+            d = c.rowcount > 0
+            conn.commit()
+            conn.close()
+            return d
+
+    def get_youtube_channels(self, chat_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM youtube_channels WHERE chat_id = ? AND is_active = 1", (chat_id,))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    def add_youtube_idea(self, chat_id, channel_id, idea_type, content):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO youtube_ideas (chat_id, channel_id, idea_type, content) VALUES (?, ?, ?, ?)",
+                     (chat_id, channel_id, idea_type, content))
+            conn.commit()
+            conn.close()
+
+    def get_youtube_ideas(self, chat_id, channel_id='', idea_type='', limit=10):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            query = "SELECT * FROM youtube_ideas WHERE chat_id = ?"
+            params = [chat_id]
+            if channel_id:
+                query += " AND channel_id = ?"
+                params.append(channel_id)
+            if idea_type:
+                query += " AND idea_type = ?"
+                params.append(idea_type)
+            query += " ORDER BY id DESC LIMIT ?"
+            params.append(limit)
+            c.execute(query, params)
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    def add_short_video(self, chat_id, channel_id, topic, script, image_prompts, text_overlays, created_by):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO short_videos (chat_id, channel_id, topic, script, image_prompts, text_overlays, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (chat_id, channel_id, topic, script, image_prompts, text_overlays, created_by))
+            conn.commit()
+            conn.close()
+
+    def get_short_videos(self, chat_id, limit=10):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM short_videos WHERE chat_id = ? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
 db = Database(DB_PATH)
 
 # ═════════════════════════════════════════════════════════════════
@@ -1253,6 +1387,285 @@ async def safe_answer(query, text="", show_alert=False):
         pass
 
 
+
+# ═════════════════════════════════════════════════════════════════
+# وظائف يوتيوب API
+# ═════════════════════════════════════════════════════════════════
+def fetch_youtube_stats(api_key, channel_id):
+    """جلب إحصائيات قناة يوتيوب باستخدام YouTube Data API v3"""
+    import requests as req
+    try:
+        url = "https://www.googleapis.com/youtube/v3/channels"
+        params = {"part": "statistics,snippet", "id": channel_id, "key": api_key}
+        resp = req.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            items = data.get('items', [])
+            if items:
+                ch = items[0]
+                stats = ch.get('statistics', {})
+                snippet = ch.get('snippet', {})
+                return {
+                    "name": snippet.get('title', 'غير معروف'),
+                    "subscribers": int(stats.get('subscriberCount', 0)),
+                    "views": int(stats.get('viewCount', 0)),
+                    "videos": int(stats.get('videoCount', 0)),
+                    "thumbnail": snippet.get('thumbnails', {}).get('default', {}).get('url', ''),
+                }
+    except Exception as e:
+        logger.error(f"YouTube stats error: {e}")
+    return None
+
+def fetch_youtube_trending(api_key, region_code="SA", max_results=5):
+    """جلب الفيديوهات الرائجة"""
+    import requests as req
+    try:
+        url = "https://www.googleapis.com/youtube/v3/videos"
+        params = {
+            "part": "snippet,statistics",
+            "chart": "mostPopular",
+            "regionCode": region_code,
+            "maxResults": max_results,
+            "key": api_key
+        }
+        resp = req.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = []
+            for item in data.get('items', []):
+                results.append({
+                    "title": item['snippet']['title'],
+                    "channel": item['snippet']['channelTitle'],
+                    "views": item.get('statistics', {}).get('viewCount', '0'),
+                    "likes": item.get('statistics', {}).get('likeCount', '0'),
+                    "video_id": item['id'],
+                    "thumbnail": item['snippet']['thumbnails'].get('default', {}).get('url', ''),
+                })
+            return results
+    except Exception as e:
+        logger.error(f"YouTube trending error: {e}")
+    return []
+
+def fetch_youtube_search(api_key, query, max_results=5):
+    """البحث في يوتيوب عن موضوع"""
+    import requests as req
+    try:
+        url = "https://www.googleapis.com/youtube/v3/search"
+        params = {
+            "part": "snippet",
+            "q": query,
+            "maxResults": max_results,
+            "type": "video",
+            "key": api_key
+        }
+        resp = req.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            results = []
+            for item in data.get('items', []):
+                results.append({
+                    "title": item['snippet']['title'],
+                    "channel": item['snippet']['channelTitle'],
+                    "video_id": item.get('id', {}).get('videoId', ''),
+                    "thumbnail": item['snippet']['thumbnails'].get('default', {}).get('url', ''),
+                })
+            return results
+    except Exception as e:
+        logger.error(f"YouTube search error: {e}")
+    return []
+
+# ═════════════════════════════════════════════════════════════════
+# توليد محتوى بالذكاء الاصطناعي (نظام مدمج)
+# ═════════════════════════════════════════════════════════════════
+VIDEO_SCRIPT_TEMPLATES = {
+    "تقنية": [
+        "🎬 سكربت فيديو تقني - الموضوع: {topic}\n\n📝 المقدمة (5 ثواني):\nهل تساءلت يوماً عن {topic}؟ اليوم سأكشف لك الحقيقة!\n\n💡 المحتوى الرئيسي (20 ثانية):\n{topic} أصبح جزءاً أساسياً من حياتنا اليومية. وفقاً لأحدث الإحصائيات، يتزايد الاهتمام بهذا المجال بشكل كبير. إليك أهم 3 نقاط يجب أن تعرفها:\n1. التطور السريع في هذا المجال غير قواعد اللعبة\n2. التطبيقات العملية أصبحت أقرب مما تتصور\n3. المستقبل يحمل مفاجآت مذهلة\n\n🎯 الخاتمة (5 ثواني):\nإذا أعجبك الفيديو اضغط لايك واشترك في القناة! شاركنا رأيك في التعليقات.",
+        "🎬 سكربت فيديو تقني متقدم - الموضوع: {topic}\n\n📢 خطاف الانتباه (3 ثواني):\n{topic} - الكلمة التي يبحث عنها الملايين!\n\n📖 الشرح (22 ثانية):\nدعني أشرح لك ببساطة. {topic} هو أحد أكثر المواضيع إثارة في عالم التقنية اليوم. ما يجعله مميزاً هو قدرته على تغيير طريقة عملنا وعيشنا. العديد من الخبراء يتوقعون أنه سيكون المحرك الرئيسي للابتكار في السنوات القادمة.\n\n✨ الدعوة للتفاعل (5 ثواني):\nما رأيك في {topic}؟ أخبرنا في التعليقات ولاتنسى الاشتراك!",
+    ],
+    "تعليمي": [
+        "📚 سكربت فيديو تعليمي - الموضوع: {topic}\n\n🎯 المقدمة (5 ثواني):\nهل تريد تعلم {topic}؟ في هذا الفيديو القصير سأعطيك أهم المعلومات!\n\n📝 المحتوى (20 ثانية):\n{topic} من المهارات المطلوبة بشكل متزايد. إليك الخطوات الأساسية:\n1. ابدأ بفهم الأساسيات والمفاهيم الرئيسية\n2. طبّق ما تعلمته عملياً من خلال مشاريع صغيرة\n3. انضم لمجتمع المتعلمين وتبادل الخبرات\n\n💡 الخاتمة (5 ثواني):\nإذا استفدت من الفيديو اضغط لايك وشاركه مع أصدقائك!",
+    ],
+    "ترفيهي": [
+        "🎮 سكربت فيديو ترفيهي - الموضوع: {topic}\n\n🔥 خطاف الانتباه (3 ثواني):\nلن تصدق ما سنكشفه عن {topic}!\n\n😄 المحتوى (22 ثانية):\n{topic} من أكثر المواضيع إثارة للجدل والإثارة! هل تعلم أن الكثير من الناس لا يعرفون الحقيقة الكاملة عن هذا الموضوع؟ اليوم سنغوص في التفاصيل ونكشف لك المفاجآت.\n\n📌 الخاتمة (5 ثواني):\nاضغط لايك إذا أردت المزيد واشترك في القناة!",
+    ],
+    "عام": [
+        "🎬 سكربت فيديو - الموضوع: {topic}\n\n📢 المقدمة (5 ثواني):\nاليوم سنتحدث عن {topic} - موضوع يهم الكثيرين!\n\n📋 المحتوى (20 ثانية):\n{topic} هو موضوع يستحق الاهتمام. في هذا الفيديو القصير سنتناول أهم النقاط والمعلومات الأساسية التي يجب أن تعرفها. سنستعرض الحقائق والأرقام ونسلط الضوء على الجوانب الأكثر إثارة.\n\n✅ الخاتمة (5 ثواني):\nشاركنا رأيك في التعليقات ولاتنسى الاشتراك في القناة!",
+    ],
+}
+
+THUMBNAIL_TEMPLATES = [
+    "🎨 فكرة صورة مصغرة: نص كبير وواضح '{title}' مع خلفية متدرجة ألوان زاهية + صورة وجه متفاجئ",
+    "🎨 فكرة صورة مصغرة: رموز وأيقونات تعبر عن '{title}' مع ألوان صفراء وحمراء لجذب الانتباه",
+    "🎨 فكرة صورة مصغرة: مقارنة بين شيئين related to '{title}' مع أسهم وعلامات استفهام",
+    "🎨 فكرة صورة مصغرة: رقم ضخم أو إحصائية مذهلة عن '{title}' مع خلفية داكنة ونص مضيء",
+]
+
+CONTENT_IDEAS_TEMPLATES = {
+    "تقنية": [
+        "مراجعة أحدث هاتف/جهاز في السوق",
+        "مقارنة بين تطبيقين منافسين",
+        "أسرار وميزات مخفية في برنامج شهير",
+        "توقعات مستقبل التقنية لعام 2026",
+        "دليل شامل لبدء تعلم البرمجة",
+    ],
+    "تعليمي": [
+        "شرح مبسط لمفهوم معقد",
+        "نصائح ذهبية للنجاح في الدراسة",
+        "أفضل مصادر التعلم المجانية",
+        "كيف تبني عادة التعلم اليومي",
+        "أخطاء شائعة يجب تجنبها",
+    ],
+    "ترفيهي": [
+        "تحدي ممتع مع أصدقائي",
+        "رد فعلي على شيء مذهل",
+        "أفضل 10 أماكن/مطاعم/ألعاب",
+        "قصة غريبة حدثت معي",
+        "مسابقة مع متابعين",
+    ],
+    "عام": [
+        "حقائق مذهلة لم تكن تعرفها",
+        "نصائح عملية للحياة اليومية",
+        "أفضل التطبيقات والمواقع المفيدة",
+        "تجربتي الشخصية مع...",
+        "أسئلة وأجوبة مع المتابعين",
+    ],
+}
+
+def generate_video_script(topic, category="عام", duration=30):
+    """توليد سكربت فيديو بالذكاء الاصطناعي"""
+    templates = VIDEO_SCRIPT_TEMPLATES.get(category, VIDEO_SCRIPT_TEMPLATES["عام"])
+    template = random.choice(templates)
+    script = template.format(topic=topic)
+    return script
+
+def generate_thumbnail_ideas(topic):
+    """توليد أفكار الصور المصغرة"""
+    ideas = []
+    for tmpl in THUMBNAIL_TEMPLATES:
+        ideas.append(tmpl.format(title=topic[:30]))
+    return ideas
+
+def generate_content_ideas(niche="عام", count=5):
+    """توليد أفكار محتوى"""
+    templates = CONTENT_IDEAS_TEMPLATES.get(niche, CONTENT_IDEAS_TEMPLATES["عام"])
+    selected = random.sample(templates, min(count, len(templates)))
+    return selected
+
+def generate_short_video_package(topic):
+    """توليد حزمة فيديو قصير 30 ثانية"""
+    script = f"""🎬 سكربت فيديو قصير 30 ثانية - الموضوع: {topic}
+
+📢 خطاف الانتباه (0-3 ثواني):
+هل تعلم ما يخص {topic}؟ استمر بالمشاهدة!
+
+📈 المحتوى الرئيسي (3-25 ثانية):
+{topic} هو أحد أكثر المواضيع إثارة اليوم!
+• النقطة الأولى: أهمية هذا الموضوع في حياتنا
+• النقطة الثانية: إحصائيات مذهلة ستدهشك
+• النقطة الثالثة: كيف يمكنك الاستفادة عملياً
+
+🎯 الدعوة للعمل (25-30 ثانية):
+اضغط لايك واشترك! شاركنا رأيك في التعليقات 👇"""
+
+    image_prompts = f"""🎨 مطالبات الصور للفيديو القصير:
+
+1. صورة افتتاحية: نص عريض "{topic[:20]}؟" مع خلفية متحركة ملونة
+2. صورة النقطة الأولى: أيقونة مع رقم 1 + نص مختصر
+3. صورة النقطة الثانية: رسم بياني أو إحصائية بصرية
+4. صورة النقطة الثالثة: رمز عملي + سهم
+5. صورة الختام: شعار القناة + "اشترك الآن" """
+
+    text_overlays = f"""📝 النصوص على الشاشة:
+
+00:00 - "{topic[:25]}؟ 🤔"
+00:03 - "النقطة الأولى ⭐"
+00:10 - "هل تعلم؟ 📊"
+00:18 - "طبّق الآن! 💡"
+00:25 - "لايك + اشتراك ❤️"
+00:28 - "شاركنا رأيك 👇" """
+
+    return script, image_prompts, text_overlays
+
+def generate_ai_reply(text, user_name="صديقي"):
+    """توليد رد ذكي بالذكاء الاصطناعي المدمج"""
+    text_lower = text.lower().strip()
+
+    # تحيات
+    greetings = ['مرحبا', 'هلا', 'السلام عليكم', 'سلام', 'اهلا', 'أهلا', 'هاي', 'صباح الخير', 'مساء الخير']
+    for g in greetings:
+        if g in text_lower:
+            return random.choice([
+                f"أهلاً وسهلاً {user_name}! كيف حالك اليوم؟ 😊",
+                f"مرحباً {user_name}! نورت المجموعة 🌟",
+                f"وعليكم السلام {user_name}! أخبارك إيه؟ 💫",
+                f"هلا والله {user_name}! حياك الله 🎉",
+            ])
+
+    # شكر
+    thanks = ['شكرا', 'مشكور', 'يعطيك العافية', 'الله يجزاك']
+    for t in thanks:
+        if t in text_lower:
+            return random.choice([
+                f"العفو {user_name}! دائماً في الخدمة 😊",
+                f"لا شكر على واجب {user_name}! 💙",
+                f"الله يعافيك {user_name}! 🌹",
+            ])
+
+    # أسئلة
+    if '?' in text or '؟' in text:
+        return random.choice([
+            f"سؤال ممتاز {user_name}! دعني أفكر... أعتقد أن الأفضل أن نسأل المشرفين عن هذا 🤔",
+            f"سؤال مهم! أتمنى أن نجد إجابة شافية 💭",
+            f"هذا سؤال يستحق النقاش! من عنده إجابة؟ 🙋",
+        ])
+
+    # ردود عامة ذكية
+    return random.choice([
+        f"كلام جميل {user_name}! 👍",
+        f"أوافقك الرأي {user_name}! ✨",
+        f"نقطة مهمة {user_name}! 💡",
+        f"شكراً للمشاركة {user_name}! 🌟",
+        f"ممتاز {user_name}! استمر 🚀",
+        f"فكرة رائعة {user_name}! 🎯",
+        f"صدقت {user_name}! 👏",
+    ])
+
+def get_weather(city):
+    """جلب حالة الطقس باستخدام wttr.in API"""
+    import requests as req
+    try:
+        resp = req.get(f"https://wttr.in/{city}?format=j1", timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            current = data.get('current_condition', [{}])[0]
+            area = data.get('nearest_area', [{}])[0]
+            return {
+                "city": area.get('areaName', [{}])[0].get('value', city),
+                "country": area.get('country', [{}])[0].get('value', ''),
+                "temp": current.get('temp_C', 'N/A'),
+                "feels_like": current.get('FeelsLikeC', 'N/A'),
+                "humidity": current.get('humidity', 'N/A'),
+                "description": current.get('weatherDesc', [{}])[0].get('value', 'N/A'),
+                "wind": current.get('windspeedKmph', 'N/A'),
+            }
+    except Exception as e:
+        logger.error(f"Weather error: {e}")
+    return None
+
+def safe_eval_math(expr):
+    """تقييم تعبير رياضي بشكل آمن"""
+    # إزالة كل شيء خطير
+    allowed = set('0123456789+-*/.()^ ')
+    expr = expr.replace('^', '**')
+    expr = ''.join(c for c in expr if c in allowed)
+    if not expr:
+        return None
+    try:
+        result = eval(expr, {"__builtins__": {}}, {"abs": abs, "round": round, "min": min, "max": max, "pow": pow})
+        return result
+    except:
+        return None
+
 # ═════════════════════════════════════════════════════════════════
 # نظام اللوحات (Keyboards) - واجهة أزرار شاملة
 # ═════════════════════════════════════════════════════════════════
@@ -1279,6 +1692,8 @@ def kb_main(is_adm=False):
          InlineKeyboardButton("🏅 المستوى", callback_data="menu_levels")],
         [InlineKeyboardButton("🎮 الألعاب", callback_data="menu_games"),
          InlineKeyboardButton("🏆 المتصدرين", callback_data="menu_leaderboard")],
+        [InlineKeyboardButton("📺 يوتيوب", callback_data="menu_youtube"),
+         InlineKeyboardButton("🛠️ أدوات ذكية", callback_data="menu_smart")],
         [InlineKeyboardButton("👤 معلوماتي", callback_data="act_me"),
          InlineKeyboardButton("📋 القوانين", callback_data="act_rules")],
     ]
@@ -1606,6 +2021,36 @@ def kb_leaderboard():
 
 
 
+
+
+def kb_youtube(chat_id):
+    channels = db.get_youtube_channels(chat_id)
+    ch_count = len(channels)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"📺 قنواتي ({ch_count})", callback_data="yt_channels"),
+         InlineKeyboardButton("➕ ربط قناة", callback_data="yt_add")],
+        [InlineKeyboardButton("➖ فصل قناة", callback_data="yt_remove"),
+         InlineKeyboardButton("📊 إحصائيات", callback_data="yt_stats")],
+        [InlineKeyboardButton("🔥 المواضيع الرائجة", callback_data="yt_trending"),
+         InlineKeyboardButton("📝 توليد سكربت", callback_data="yt_script")],
+        [InlineKeyboardButton("🎬 فيديو قصير 30ث", callback_data="yt_short"),
+         InlineKeyboardButton("🎨 صور مصغرة", callback_data="yt_thumb")],
+        [InlineKeyboardButton("📋 تتبع الفيديوهات", callback_data="yt_track"),
+         InlineKeyboardButton("💡 أفكار محتوى", callback_data="yt_ideas")],
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
+    ])
+
+def kb_smart():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 رمز QR", callback_data="act_qrcode"),
+         InlineKeyboardButton("🔢 حاسبة", callback_data="act_calc")],
+        [InlineKeyboardButton("🌤️ الطقس", callback_data="act_weather"),
+         InlineKeyboardButton("⏰ تذكير", callback_data="act_reminder")],
+        [InlineKeyboardButton("🔗 معلومات رابط", callback_data="act_urlinfo"),
+         InlineKeyboardButton("📊 إحصائيات سريعة", callback_data="act_quickstats")],
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
+    ])
+
 # ═════════════════════════════════════════════════════════════════
 # أوامر /start و /panel و /help
 # ═════════════════════════════════════════════════════════════════
@@ -1619,7 +2064,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == OWNER_ID:
         is_adm = True
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v11.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v12.0</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "🤖 <b>ذكاء اصطناعي</b> ردود ذكية تلقائية في المجموعة\n"
@@ -1666,7 +2111,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ═══ القائمة الرئيسية ═══
         if data == "back":
             await safe_edit(query,
-                "🛡️ <b>بوت إدارة المجموعات المتكامل v11.0</b>\n\n"
+                "🛡️ <b>بوت إدارة المجموعات المتكامل v12.0</b>\n\n"
                 "🔐 حماية متقدمة | ⚡ إدارة ذكية | 🤖 ذكاء اصطناعي\n\n"
                 "👇 اختر أي قسم:",
                 reply_markup=kb_main(is_adm or is_owner))
@@ -1998,6 +2443,120 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 medal = medals[i-1] if i <= 3 else f"{i}."
                 text += f"{medal} <a href='tg://user?id={uid}'>مستخدم</a> - {rxn} تفاعل\n"
             await safe_edit(query, text, reply_markup=kb_leaderboard())
+
+
+        # ═══ إدارة يوتيوب ═══
+        elif data == "menu_youtube":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            await safe_edit(query, "📺 <b>إدارة قناة اليوتيوب</b>\n\nاربط قناتك وأدر محتواك بالذكاء الاصطناعي!\nيمكنك توليد سكربتات فيديو وأفكار محتوى تلقائياً.", reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_add":
+            if not is_adm: return
+            context.user_data["waiting"] = "yt_add"
+            await safe_edit(query, "➕ <b>ربط قناة يوتيوب</b>\n\nأرسل البيانات بالصيغة التالية:\n<code>API_KEY | CHANNEL_ID | اسم القناة</code>\n\n💡 للحصول على API Key:\n1. اذهب إلى console.cloud.google.com\n2. أنشئ مشروع جديد\n3. فعّل YouTube Data API v3\n4. أنشئ بيانات اعتماد API Key", reply_markup=kb_back_cancel())
+
+        elif data == "yt_remove":
+            if not is_adm: return
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 لا توجد قنوات مربوطة", show_alert=True); return
+            ch_list = "\n".join([f"• {c['channel_name']} (ID: <code>{c['channel_id'][:15]}...</code>)" for c in channels])
+            context.user_data["waiting"] = "yt_remove"
+            await safe_edit(query, f"➖ <b>فصل قناة</b>\n\n{ch_list}\n\nأرسل معرف القناة (Channel ID) التي تريد فصلها:", reply_markup=kb_back_cancel())
+
+        elif data == "yt_channels":
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_edit(query, "📺 <b>لا توجد قنوات مربوطة</b>\n\nاضغط ➕ ربط قناة لإضافة قناتك!", reply_markup=kb_youtube(chat.id)); return
+            text = "📺 <b>القنوات المربوطة:</b>\n\n"
+            for ch in channels:
+                text += f"• <b>{ch['channel_name']}</b>\n  المشتركين: {ch.get('subscriber_count', 0)} | الفيديوهات: {ch.get('video_count', 0)}\n\n"
+            await safe_edit(query, text, reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_stats":
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            ch = channels[0]
+            stats = fetch_youtube_stats(ch.get('api_key', ''), ch['channel_id'])
+            if stats:
+                text = f"📊 <b>إحصائيات قناة {stats['name']}</b>\n\n👥 المشتركين: {stats['subscribers']:,}\n👁️ المشاهدات: {stats['views']:,}\n🎬 الفيديوهات: {stats['videos']:,}"
+                # Update DB
+                db.add_youtube_channel(chat.id, ch['channel_id'], stats['name'], ch.get('api_key', ''), user_id)
+            else:
+                text = "❌ لم يتم جلب الإحصائيات. تأكد من صحة API Key و Channel ID"
+            await safe_edit(query, text, reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_trending":
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            ch = channels[0]
+            trending = fetch_youtube_trending(ch.get('api_key', ''))
+            if trending:
+                text = "🔥 <b>الفيديوهات الرائجة:</b>\n\n"
+                for i, v in enumerate(trending, 1):
+                    text += f"{i}. <b>{v['title'][:40]}</b>\n   👁️ {v['views']} | ❤️ {v['likes']}\n\n"
+            else:
+                text = "❌ لم يتم جلب الرائج. تحقق من API Key"
+            await safe_edit(query, text, reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_script":
+            if not is_adm: return
+            context.user_data["waiting"] = "yt_script"
+            await safe_edit(query, "📝 <b>توليد سكربت فيديو</b>\n\nأرسل الموضوع ونوع المحتوى:\n<code>الموضوع | النوع</code>\n\nالأنواع: تقنية | تعليمي | ترفيهي | عام\nمثال: الذكاء الاصطناعي | تقنية", reply_markup=kb_back_cancel())
+
+        elif data == "yt_short":
+            if not is_adm: return
+            context.user_data["waiting"] = "yt_short"
+            await safe_edit(query, "🎬 <b>إنشاء فيديو قصير 30 ثانية</b>\n\nأرسل موضوع الفيديو القصير:\nسيتم توليد: سكربت + مطالبات صور + نصوص على الشاشة", reply_markup=kb_back_cancel())
+
+        elif data == "yt_thumb":
+            if not is_adm: return
+            context.user_data["waiting"] = "yt_thumb"
+            await safe_edit(query, "🎨 <b>أفكار الصور المصغرة</b>\n\nأرسل عنوان/موضوع الفيديو:", reply_markup=kb_back_cancel())
+
+        elif data == "yt_track":
+            await safe_edit(query, "📋 <b>تتبع الفيديوهات</b>\n\n💡 هذه الميزة تتتبع أداء فيديوهات قناتك تلقائياً\nسيتم إضافة بيانات الفيديوهات عند جلب الإحصائيات", reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_ideas":
+            if not is_adm: return
+            context.user_data["waiting"] = "yt_ideas"
+            await safe_edit(query, "💡 <b>أفكار محتوى بالذكاء الاصطناعي</b>\n\nأرسل مجال قناتك:\nتقنية | تعليمي | ترفيهي | عام", reply_markup=kb_back_cancel())
+
+        # ═══ الأدوات الذكية ═══
+        elif data == "menu_smart":
+            await safe_edit(query, "🛠️ <b>الأدوات الذكية</b>\n\nأدوات مفيدة تعتمد على الذكاء الاصطناعي!", reply_markup=kb_smart())
+
+        elif data == "act_qrcode":
+            context.user_data["waiting"] = "qrcode"
+            await safe_edit(query, "📱 <b>إنشاء رمز QR</b>\n\nأرسل النص أو الرابط الذي تريد تحويله إلى رمز QR:", reply_markup=kb_back_cancel())
+
+        elif data == "act_calc":
+            context.user_data["waiting"] = "calc"
+            await safe_edit(query, "🔢 <b>الحاسبة الذكية</b>\n\nأرسل العملية الحسابية:\nمثال: 25 * 4 + 100\nيدعم: + - * / ^ ()", reply_markup=kb_back_cancel())
+
+        elif data == "act_weather":
+            context.user_data["waiting"] = "weather"
+            await safe_edit(query, "🌤️ <b>حالة الطقس</b>\n\nأرسل اسم المدينة:\nمثال: الرياض، جدة، القاهرة، دبي", reply_markup=kb_back_cancel())
+
+        elif data == "act_reminder":
+            context.user_data["waiting"] = "reminder"
+            await safe_edit(query, "⏰ <b>تعيين تذكير</b>\n\nاكتب: الدقائق | الرسالة\nمثال: 30 | حان وقت الاجتماع", reply_markup=kb_back_cancel())
+
+        elif data == "act_urlinfo":
+            context.user_data["waiting"] = "urlinfo"
+            await safe_edit(query, "🔗 <b>معلومات الرابط</b>\n\nأرسل الرابط:", reply_markup=kb_back_cancel())
+
+        elif data == "act_quickstats":
+            stats = db.get_stats(chat.id) if chat else {}
+            text = "📊 <b>إحصائيات سريعة</b>\n\n"
+            if stats:
+                text += f"💬 الرسائل: {stats.get('total_messages', 0)}\n🚫 الحظر: {stats.get('total_bans', 0)}\n🔇 الكتم: {stats.get('total_mutes', 0)}\n🗑️ المحذوفات: {stats.get('total_deleted', 0)}"
+            else:
+                text += "لا توجد إحصائيات بعد"
+            await safe_edit(query, text, reply_markup=kb_smart())
 
         # ═══ تبديل الحماية ═══
         elif data.startswith("tog_"):
@@ -3551,6 +4110,176 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await msg.reply_text("❌ اكتب عدد الدقائق أو: الدقائق | الرسالة")
             context.user_data.pop("waiting", None); return
 
+        # ═══ معالجات يوتيوب ═══
+        elif waiting == "yt_add":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|")
+                if len(parts) >= 3:
+                    api_key = parts[0].strip()
+                    channel_id = parts[1].strip()
+                    ch_name = parts[2].strip()
+                    # Verify API key by fetching stats
+                    stats = fetch_youtube_stats(api_key, channel_id)
+                    if stats:
+                        db.add_youtube_channel(chat.id, channel_id, stats['name'], api_key, user_id)
+                        await msg.reply_text(f"📺 تم ربط القناة: <b>{stats['name']}</b> ✅\n👥 المشتركين: {stats['subscribers']:,} | 🎬 الفيديوهات: {stats['videos']:,}", parse_mode="HTML")
+                    else:
+                        db.add_youtube_channel(chat.id, channel_id, ch_name, api_key, user_id)
+                        await msg.reply_text(f"📺 تم حفظ القناة: {ch_name} ✅\n⚠️ لم يتم التحقق من البيانات - تأكد من صحة API Key")
+                else:
+                    await msg.reply_text("❌ الصيغة: API_KEY | CHANNEL_ID | اسم القناة")
+            else:
+                await msg.reply_text("❌ استخدم: API_KEY | CHANNEL_ID | اسم القناة")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_remove":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            ch_id = text.strip()
+            if db.remove_youtube_channel(chat.id, ch_id):
+                await msg.reply_text("➖ تم فصل القناة بنجاح ✅")
+            else:
+                await msg.reply_text("❌ القناة غير موجودة")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_script":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|", 1)
+                topic = parts[0].strip()
+                category = parts[1].strip() if len(parts) > 1 else "عام"
+            else:
+                topic = text.strip()
+                category = "عام"
+            script = generate_video_script(topic, category)
+            # Save to ideas
+            channels = db.get_youtube_channels(chat.id)
+            ch_id = channels[0]['channel_id'] if channels else ''
+            db.add_youtube_idea(chat.id, ch_id, 'script', script)
+            await msg.reply_text(script, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_short":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            topic = text.strip()
+            script, img_prompts, overlays = generate_short_video_package(topic)
+            # Save to DB
+            channels = db.get_youtube_channels(chat.id)
+            ch_id = channels[0]['channel_id'] if channels else ''
+            db.add_short_video(chat.id, ch_id, topic, script, img_prompts, overlays, user_id)
+            full_text = f"{script}\n\n{img_prompts}\n\n{overlays}"
+            # Split if too long
+            if len(full_text) > 4000:
+                await msg.reply_text(script, parse_mode="HTML")
+                await msg.reply_text(img_prompts, parse_mode="HTML")
+                await msg.reply_text(overlays, parse_mode="HTML")
+            else:
+                await msg.reply_text(full_text, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_thumb":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            ideas = generate_thumbnail_ideas(text.strip())
+            ideas_text = "🎨 <b>أفكار الصور المصغرة:</b>\n\n" + "\n\n".join(ideas)
+            await msg.reply_text(ideas_text, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_ideas":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            niche = text.strip()
+            ideas = generate_content_ideas(niche, 5)
+            ideas_text = f"💡 <b>أفكار محتوى - مجال: {niche}</b>\n\n"
+            for i, idea in enumerate(ideas, 1):
+                ideas_text += f"{i}. {idea}\n"
+            await msg.reply_text(ideas_text, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ الأدوات الذكية ═══
+        elif waiting == "qrcode":
+            if HAS_QRCODE:
+                try:
+                    qr = qrcode_lib.QRCode(version=1, box_size=10, border=5)
+                    qr.add_data(text)
+                    qr.make(fit=True)
+                    img = qr.make_image(fill_color="black", back_color="white")
+                    buf = io.BytesIO()
+                    img.save(buf, format='PNG')
+                    buf.seek(0)
+                    await msg.reply_photo(photo=buf, caption=f"📱 رمز QR لـ: {text[:50]}")
+                except Exception as e:
+                    await msg.reply_text(f"❌ خطأ في إنشاء QR: {e}")
+            else:
+                await msg.reply_text("❌ مكتبة QR غير متاحة")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "calc":
+            result = safe_eval_math(text)
+            if result is not None:
+                await msg.reply_text(f"🔢 <b>النتيجة:</b>\n\n{text} = <b>{result}</b>", parse_mode="HTML")
+            else:
+                await msg.reply_text("❌ تعبير رياضي غير صالح\nاستخدم: أرقام وعمليات + - * / ^ ()")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "weather":
+            city = text.strip()
+            weather = get_weather(city)
+            if weather:
+                text_out = (
+                    f"🌤️ <b>حالة الطقس - {weather['city']}, {weather['country']}</b>\n\n"
+                    f"🌡️ الحرارة: {weather['temp']}°C\n"
+                    f"🤔 يشبه: {weather['feels_like']}°C\n"
+                    f"💧 الرطوبة: {weather['humidity']}%\n"
+                    f"🌬️ الرياح: {weather['wind']} كم/س\n"
+                    f"☁️ الحالة: {weather['description']}"
+                )
+                await msg.reply_text(text_out, parse_mode="HTML")
+            else:
+                await msg.reply_text("❌ لم يتم العثور على المدينة. جرب اسم المدينة بالإنجليزية")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "reminder":
+            if "|" in text:
+                parts = text.split("|", 1)
+                try:
+                    minutes = int(parts[0].strip())
+                    reminder_msg = parts[1].strip() if len(parts) > 1 else "تذكير!"
+                    send_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                    db.add_scheduled(chat.id, f"⏰ تذكير: {reminder_msg}", send_at, user_id)
+                    await msg.reply_text(f"⏰ تم تعيين تذكير بعد {minutes} دقيقة ✅")
+                except:
+                    await msg.reply_text("❌ الصيغة: الدقائق | الرسالة")
+            else:
+                try:
+                    minutes = int(text.strip())
+                    send_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                    db.add_scheduled(chat.id, "⏰ تذكير!", send_at, user_id)
+                    await msg.reply_text(f"⏰ تم تعيين تذكير بعد {minutes} دقيقة ✅")
+                except:
+                    await msg.reply_text("❌ اكتب عدد الدقائق أو: الدقائق | الرسالة")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "urlinfo":
+            url = text.strip()
+            info_text = f"🔗 <b>معلومات الرابط</b>\n\n🌐 الرابط: {url}\n📏 الطول: {len(url)} حرف"
+            if 'youtube.com' in url or 'youtu.be' in url:
+                info_text += "\n📺 نوع: رابط يوتيوب"
+            elif 't.me' in url:
+                info_text += "\n📱 نوع: رابط تيليجرام"
+            elif 'github.com' in url:
+                info_text += "\n💻 نوع: رابط GitHub"
+            elif 'twitter.com' in url or 'x.com' in url:
+                info_text += "\n🐦 نوع: رابط تويتر"
+            else:
+                info_text += "\n🌐 نوع: رابط عام"
+            await msg.reply_text(info_text, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
         else:
             context.user_data.pop("waiting", None)
 
@@ -3743,10 +4472,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # الردود الذكية التلقائية
     auto_replies = db.get_auto_replies(chat.id)
+    replied = False
     for trigger, reply_t in auto_replies:
         if trigger.lower() in text.lower():
             await msg.reply_text(reply_t)
+            replied = True
             break
+
+    # رد الذكاء الاصطناعي المدمج
+    if not replied and settings.get('ai_reply', 0) and not user.is_bot:
+        ai_response = generate_ai_reply(text, user.first_name)
+        if ai_response:
+            await msg.reply_text(ai_response)
 
     # عداد الرسائل
     db.increment_msg_count(chat.id, user_id)
@@ -4092,56 +4829,9 @@ async def check_expired_captchas(context: ContextTypes.DEFAULT_TYPE):
 # الدالة الرئيسية - مع إصلاح مشكلة Conflict
 # ═════════════════════════════════════════════════════════════════
 
-def kill_existing_instances():
-    """قتل أي مثيل سابق للبوت لمنع خطأ Conflict - طريقة شاملة"""
-    import requests as req
-    api_url = f"https://api.telegram.org/bot{TOKEN}"
-    
-    # الخطوة 1: حذف webhook لإيقاف أي polling قائم
-    try:
-        resp = req.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
-        logger.info(f"✅ Step 1 - deleteWebhook: {resp.status_code}")
-    except Exception as e:
-        logger.warning(f"⚠️ deleteWebhook failed: {e}")
-    
-    time.sleep(5)  # انتظار أطول لإيقاف المثيل القديم
-    
-    # الخطوة 2: استنزاف كل التحديثات المعلقة بـ getUpdates
-    try:
-        for drain_attempt in range(8):  # زيادة المحاولات
-            resp = req.post(f"{api_url}/getUpdates", json={"timeout": 0}, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                updates = data.get('result', [])
-                if updates:
-                    max_offset = max(u['update_id'] for u in updates)
-                    req.post(f"{api_url}/getUpdates", json={"offset": max_offset + 1, "timeout": 0}, timeout=10)
-                    logger.info(f"✅ Step 2 - Drained {len(updates)} pending updates")
-                else:
-                    logger.info("✅ Step 2 - No pending updates")
-                    break
-            elif resp.status_code == 409:
-                logger.warning(f"⚠️ Still conflict (attempt {drain_attempt + 1}/8)")
-                time.sleep(5)  # انتظار أطول
-            else:
-                logger.warning(f"⚠️ getUpdates returned {resp.status_code}")
-                break
-            time.sleep(2)
-    except Exception as e:
-        logger.warning(f"⚠️ Drain updates failed: {e}")
-    
-    # الخطوة 3: حذف webhook مرة أخرى للتأكد
-    try:
-        req.post(f"{api_url}/deleteWebhook", json={"drop_pending_updates": True}, timeout=10)
-        logger.info("✅ Step 3 - Second deleteWebhook done")
-    except:
-        pass
-    
-    time.sleep(5)
-    logger.info("✅ Old instance cleanup complete - safe to start")
-
-
-def build_and_run():
+def build_application():
+    """بناء التطبيق فقط (بدون تشغيل) - يسمح بالتحكم بشكل أفضل"""
+    # ═══ تعريف post_init قبل بناء التطبيق ═══
     """بناء التطبيق وتشغيله - مع إعادة تشغيل تلقائي عند الفشل"""
     kill_existing_instances()
 
@@ -4902,7 +5592,7 @@ def build_and_run():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v11.0 يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v12.0 يعمل الآن!")
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
@@ -4926,7 +5616,7 @@ def build_and_run():
     app.add_error_handler(error_handler)
     logger.info("✅ Global error handler registered")
     logger.info("✅ Bot started successfully! 🚀")
-    app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
+    return app
 
 
 def main():
@@ -4934,35 +5624,67 @@ def main():
         logger.error("❌ لم يتم تعيين TOKEN! قم بتعيين متغير البيئة TOKEN")
         return
 
+    # ═══ محاولة الحصول على قفل أحادي ═══
+    if not acquire_singleton_lock():
+        logger.error("❌ مثيل آخر يعمل! الانتظار 60 ثانية...")
+        time.sleep(60)
+        if not acquire_singleton_lock():
+            logger.error("❌ لا يمكن الحصول على القفل. الخروج.")
+            return
+
+    # ═══ معالجات الإغلاق الأنيق ═══
+    def signal_handler(signum, frame):
+        logger.info(f"🛑 Received signal {signum}, shutting down gracefully...")
+        release_singleton_lock()
+        sys.exit(0)
+
+    signal_module.signal(signal_module.SIGTERM, signal_handler)
+    signal_module.signal(signal_module.SIGINT, signal_handler)
+
     # بدء خادم Flask في خيط منفصل
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
     logger.info("✅ خادم Flask بدأ")
 
-    # ═══ نظام إعادة التشغيل التلقائي ═══
+    # ═══ نظام إعادة التشغيل التلقائي - محسّن ═══
     retry_count = 0
-    while True:
+    max_retries = 15
+
+    while retry_count < max_retries:
+        app = None
         try:
-            build_and_run()
+            app = build_application()
+            logger.info("🛡️ بوت إدارة المجموعات v12.0 يعمل الآن!")
+            app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
             # إذا وصلنا هنا، فـ run_polling توقف طبيعياً
-            logger.warning("⚠️ run_polling stopped normally - restarting in 15 seconds...")
-            time.sleep(15)
-            retry_count = 0  # إعادة تعيين العداد عند التشغيل الناجح
+            logger.warning("⚠️ run_polling stopped normally")
+            break
+
         except Conflict as e:
             retry_count += 1
-            wait_time = min(60, 30 + (retry_count * 10))  # زيادة تدريجية حتى 60 ثانية
-            logger.warning(f"⚠️ Conflict error (retry #{retry_count}) - waiting {wait_time}s before restart...")
-            kill_existing_instances()  # قتل المثيلات المتعارضة
+            wait_time = min(120, 30 * retry_count)  # زيادة أسية حتى 120 ثانية
+            logger.warning(f"⚠️ Conflict error (retry #{retry_count}/{max_retries}) - waiting {wait_time}s...")
+            # حذف webhook عبر REST API
+            try:
+                import requests as req
+                req.post(f"https://api.telegram.org/bot{TOKEN}/deleteWebhook",
+                        json={"drop_pending_updates": True}, timeout=10)
+            except:
+                pass
             time.sleep(wait_time)
+
         except Exception as e:
-            error_str = str(e)
             retry_count += 1
+            error_str = str(e)
             if "NetworkError" in error_str or "TimedOut" in error_str:
                 logger.warning(f"⚠️ Network error (retry #{retry_count}) - restarting in 15 seconds...")
                 time.sleep(15)
             else:
                 logger.error(f"❌ Unexpected error (retry #{retry_count}): {e}")
-                time.sleep(15)
+                time.sleep(30)
+
+    release_singleton_lock()
+    logger.info("🛑 Bot shut down complete")
 
 
 async def _background_tasks(app):

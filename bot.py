@@ -19,6 +19,7 @@ import random
 import asyncio
 from datetime import datetime, timedelta
 from flask import Flask, jsonify
+from waitress import serve
 from telegram import Update, ChatPermissions, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -93,7 +94,8 @@ def status():
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
-    web_app.run(host='0.0.0.0', port=port, use_reloader=False)
+    logger.info(f"🌐 Starting production server on port {port}")
+    serve(web_app, host='0.0.0.0', port=port)
 
 # ═════════════════════════════════════════════════════════════════
 # نظام قاعدة البيانات SQLite

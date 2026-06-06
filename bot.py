@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════════╗
-║  🛡️ بوت إدارة المجموعات المتكامل v12.0 - الإصدار الخارق 🛡️     ║
+║  🛡️ بوت إدارة المجموعات المتكامل v13.0 - الإصدار الخارق 🛡️     ║
 ║                                                                  ║
 ║  بوت احترافي لإدارة وحماية مجموعات التيليجرام                   ║
 ║  واجهة أزرار كاملة | حماية متقدمة | إدارة ذكية | ذكاء اصطناعي  ║
@@ -119,7 +119,7 @@ web_app = Flask(__name__)
 def health_check():
     return jsonify({
         "status": "running",
-        "bot": "Group Manager v12.0",
+        "bot": "Group Manager v13.0",
         "token_set": bool(TOKEN),
         "uptime": True
     }), 200
@@ -358,6 +358,15 @@ class Database:
             c.execute("CREATE TABLE IF NOT EXISTS youtube_videos (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT, video_id TEXT, title TEXT DEFAULT '', views INTEGER DEFAULT 0, likes INTEGER DEFAULT 0, comments INTEGER DEFAULT 0, tracked_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             c.execute("CREATE TABLE IF NOT EXISTS youtube_ideas (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT, idea_type TEXT DEFAULT 'script', content TEXT, generated_at TEXT DEFAULT CURRENT_TIMESTAMP, used INTEGER DEFAULT 0)")
             c.execute("CREATE TABLE IF NOT EXISTS short_videos (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT DEFAULT '', topic TEXT, script TEXT DEFAULT '', image_prompts TEXT DEFAULT '', text_overlays TEXT DEFAULT '', status TEXT DEFAULT 'draft', created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            # جداول v13.0 الجديدة
+            c.execute("CREATE TABLE IF NOT EXISTS youtube_uploads (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT DEFAULT '', video_title TEXT DEFAULT '', video_desc TEXT DEFAULT '', video_tags TEXT DEFAULT '', video_path TEXT DEFAULT '', status TEXT DEFAULT 'pending', scheduled_at TEXT DEFAULT '', uploaded_at TEXT DEFAULT '', upload_response TEXT DEFAULT '', created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS youtube_analytics (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, channel_id TEXT, metric_date TEXT DEFAULT CURRENT_TIMESTAMP, subscribers_delta INTEGER DEFAULT 0, views_delta INTEGER DEFAULT 0, watch_time_minutes REAL DEFAULT 0, revenue REAL DEFAULT 0, top_video_id TEXT DEFAULT '')")
+            c.execute("CREATE TABLE IF NOT EXISTS ai_chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user_id INTEGER, role TEXT DEFAULT 'user', content TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS spam_patterns (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, pattern TEXT, pattern_type TEXT DEFAULT 'regex', is_active INTEGER DEFAULT 1, added_by INTEGER, added_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(chat_id, pattern))")
+            c.execute("CREATE TABLE IF NOT EXISTS moderation_log (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user_id INTEGER, action TEXT, reason TEXT DEFAULT '', confidence REAL DEFAULT 0, auto_action INTEGER DEFAULT 0, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS voice_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user_id INTEGER, file_id TEXT DEFAULT '', duration INTEGER DEFAULT 0, transcription TEXT DEFAULT '', created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS group_backups (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, backup_data TEXT DEFAULT '', backup_type TEXT DEFAULT 'full', created_by INTEGER, created_at TEXT DEFAULT CURRENT_TIMESTAMP)")
+            c.execute("CREATE TABLE IF NOT EXISTS botnet_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, source_chat_id INTEGER, target_bot_id INTEGER DEFAULT 0, command TEXT DEFAULT '', message TEXT, status TEXT DEFAULT 'sent', sent_at TEXT DEFAULT CURRENT_TIMESTAMP)")
             conn.commit()
             conn.close()
 
@@ -1167,6 +1176,182 @@ class Database:
             conn.close()
             return [dict(r) for r in rows]
 
+    # ═══ v13.0 YouTube Upload & Analytics ═══
+    def add_youtube_upload(self, chat_id, channel_id, video_title, video_desc, video_tags, video_path, scheduled_at, created_by):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO youtube_uploads (chat_id, channel_id, video_title, video_desc, video_tags, video_path, scheduled_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     (chat_id, channel_id, video_title, video_desc, video_tags, video_path, scheduled_at, created_by))
+            conn.commit()
+            conn.close()
+
+    def get_pending_uploads(self, chat_id, limit=10):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("SELECT * FROM youtube_uploads WHERE chat_id = ? AND status = 'pending' AND scheduled_at <= ? ORDER BY id DESC LIMIT ?", (chat_id, now, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    def update_upload_status(self, upload_id, status, upload_response=''):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            c.execute("UPDATE youtube_uploads SET status = ?, upload_response = ?, uploaded_at = ? WHERE id = ?", (status, upload_response, now, upload_id))
+            conn.commit()
+            conn.close()
+
+    def add_youtube_analytics(self, chat_id, channel_id, subs_delta=0, views_delta=0, watch_time=0, revenue=0, top_video=''):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO youtube_analytics (chat_id, channel_id, subscribers_delta, views_delta, watch_time_minutes, revenue, top_video_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (chat_id, channel_id, subs_delta, views_delta, watch_time, revenue, top_video))
+            conn.commit()
+            conn.close()
+
+    def get_youtube_analytics(self, chat_id, channel_id='', days=30):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+            query = "SELECT * FROM youtube_analytics WHERE chat_id = ? AND metric_date >= ?"
+            params = [chat_id, cutoff]
+            if channel_id:
+                query += " AND channel_id = ?"
+                params.append(channel_id)
+            query += " ORDER BY metric_date DESC LIMIT 30"
+            c.execute(query, params)
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    # ═══ AI Chat History ═══
+    def add_ai_chat(self, chat_id, user_id, role, content):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO ai_chat_history (chat_id, user_id, role, content) VALUES (?, ?, ?, ?)",
+                     (chat_id, user_id, role, content))
+            conn.commit()
+            conn.close()
+
+    def get_ai_chat_history(self, chat_id, limit=20):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM ai_chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    def clear_ai_chat_history(self, chat_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("DELETE FROM ai_chat_history WHERE chat_id = ?", (chat_id,))
+            conn.commit()
+            conn.close()
+
+    # ═══ Spam Patterns ═══
+    def add_spam_pattern(self, chat_id, pattern, pattern_type, added_by):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT OR IGNORE INTO spam_patterns (chat_id, pattern, pattern_type, added_by) VALUES (?, ?, ?, ?)",
+                     (chat_id, pattern, pattern_type, added_by))
+            conn.commit()
+            conn.close()
+
+    def get_spam_patterns(self, chat_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM spam_patterns WHERE chat_id = ? AND is_active = 1", (chat_id,))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    # ═══ Moderation Log ═══
+    def add_moderation_log(self, chat_id, user_id, action, reason='', confidence=0, auto_action=0):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO moderation_log (chat_id, user_id, action, reason, confidence, auto_action) VALUES (?, ?, ?, ?, ?, ?)",
+                     (chat_id, user_id, action, reason, confidence, auto_action))
+            conn.commit()
+            conn.close()
+
+    def get_moderation_log(self, chat_id, limit=20):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM moderation_log WHERE chat_id = ? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    # ═══ Voice Messages ═══
+    def add_voice_message(self, chat_id, user_id, file_id, duration, transcription=''):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO voice_messages (chat_id, user_id, file_id, duration, transcription) VALUES (?, ?, ?, ?, ?)",
+                     (chat_id, user_id, file_id, duration, transcription))
+            conn.commit()
+            conn.close()
+
+    # ═══ Group Backups ═══
+    def create_backup(self, chat_id, backup_data, backup_type, created_by):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO group_backups (chat_id, backup_data, backup_type, created_by) VALUES (?, ?, ?, ?)",
+                     (chat_id, backup_data, backup_type, created_by))
+            conn.commit()
+            conn.close()
+
+    def get_latest_backup(self, chat_id):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM group_backups WHERE chat_id = ? ORDER BY id DESC LIMIT 1", (chat_id,))
+            row = c.fetchone()
+            conn.close()
+            return dict(row) if row else None
+
+    def get_backups(self, chat_id, limit=5):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT id, backup_type, created_by, created_at FROM group_backups WHERE chat_id = ? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
+    # ═══ Botnet Messages ═══
+    def add_botnet_message(self, source_chat_id, target_bot_id, command, message):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("INSERT INTO botnet_messages (source_chat_id, target_bot_id, command, message) VALUES (?, ?, ?, ?)",
+                     (source_chat_id, target_bot_id, command, message))
+            conn.commit()
+            conn.close()
+
+    def get_botnet_messages(self, chat_id, limit=20):
+        with self.lock:
+            conn = self._get_conn()
+            c = conn.cursor()
+            c.execute("SELECT * FROM botnet_messages WHERE source_chat_id = ? ORDER BY id DESC LIMIT ?", (chat_id, limit))
+            rows = c.fetchall()
+            conn.close()
+            return [dict(r) for r in rows]
+
 db = Database(DB_PATH)
 
 # ═════════════════════════════════════════════════════════════════
@@ -1183,6 +1368,8 @@ VALID_SETTING_KEYS = {
     "absence_mode", "auto_welcome", "welcome_back_msg",
     "bot_communication", "anti_spoof", "auto_translate", "level_system",
     "learn_responses", "group_language",
+    "anti_spam_ai", "auto_moderator", "ai_chat_mode", "voice_processing",
+    "group_clone_source",
 }
 
 VALID_STAT_KEYS = {
@@ -1586,6 +1773,392 @@ def generate_short_video_package(topic):
 
     return script, image_prompts, text_overlays
 
+# ═════════════════════════════════════════════════════════════════
+# وظائف v13.0 الجديدة - يوتيوب، AI، سبام، إشراف
+# ═════════════════════════════════════════════════════════════════
+
+def upload_video_to_youtube(api_key, channel_id, video_title, video_desc="", video_tags="", video_path=""):
+    """رفع فيديو إلى يوتيوب باستخدام YouTube Data API v3 REST endpoints
+    يتطلب OAuth2 access token (ليس API Key فقط)
+    هذه الدالة تحضّر عملية الرفع وتبدأ عملية الرفع القابل للاستئناف"""
+    import requests as req
+    try:
+        # الخطوة 1: بدء عملية الرفع القابل للاستئناف
+        upload_url = "https://www.googleapis.com/upload/youtube/v3/videos"
+        metadata = {
+            "snippet": {
+                "title": video_title[:100],
+                "description": video_desc[:5000],
+                "tags": [t.strip() for t in video_tags.split(",") if t.strip()][:500],
+                "categoryId": "22"  # People & Blogs default
+            },
+            "status": {
+                "privacyStatus": "private",
+                "selfDeclaredMadeForKids": False,
+            }
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json; charset=UTF-8",
+            "X-Upload-Content-Type": "video/*",
+        }
+        # بدء جلسة الرفع
+        resp = req.post(
+            upload_url + "?uploadType=resumable&part=snippet,status",
+            headers=headers,
+            json=metadata,
+            timeout=30
+        )
+        if resp.status_code in (200, 201):
+            upload_session_url = resp.headers.get('Location')
+            if upload_session_url and video_path:
+                # الخطوة 2: رفع ملف الفيديو
+                with open(video_path, 'rb') as f:
+                    video_data = f.read()
+                upload_resp = req.put(
+                    upload_session_url,
+                    headers={"Content-Type": "video/*"},
+                    data=video_data,
+                    timeout=300
+                )
+                if upload_resp.status_code in (200, 201):
+                    result = upload_resp.json()
+                    return {
+                        "success": True,
+                        "video_id": result.get('id', ''),
+                        "video_url": f"https://youtu.be/{result.get('id', '')}",
+                        "status": result.get('status', {}).get('uploadStatus', 'unknown')
+                    }
+                else:
+                    return {"success": False, "error": f"Upload failed: {upload_resp.status_code} - {upload_resp.text[:200]}"}
+            else:
+                return {"success": True, "message": "Upload session created. Video file not provided - session ready for manual upload.", "session_url": upload_session_url}
+        else:
+            return {"success": False, "error": f"Session init failed: {resp.status_code} - {resp.text[:200]}"}
+    except Exception as e:
+        logger.error(f"YouTube upload error: {e}")
+        return {"success": False, "error": str(e)}
+
+def fetch_trending_for_content(api_key, region_code="SA", niche=""):
+    """قراءة المواضيع الرائجة من يوتيوب وتوليد أفكار فيديو"""
+    import requests as req
+    try:
+        # جلب الفيديوهات الرائجة
+        trending = fetch_youtube_trending(api_key, region_code, max_results=10)
+        if not trending:
+            return []
+
+        ideas = []
+        for v in trending:
+            title = v.get('title', '')
+            channel = v.get('channel', '')
+            views = v.get('views', '0')
+
+            # توليد أفكار بناءً على الرائج
+            idea_templates = [
+                f"🎬 رد فعل على: {title[:50]} - فيديو رد فعل ممتع!",
+                f"📊 تحليل: لماذا حقق \"{title[:40]}\" {views} مشاهدة؟",
+                f"🔄 تحدي محاكاة: {title[:40]} - نسختنا العربية!",
+                f"💡 5 حقائق عن: {title[:40]} - محتوى تعليمي",
+                f"🆚 مقارنة: {title[:35]} vs محتوى مشابه - أيهما أفضل؟",
+            ]
+            ideas.extend(idea_templates[:2])  # فكرتين لكل فيديو رائج
+
+        # إضافة أفكار خاصة بالمجال إن وجد
+        if niche:
+            niche_ideas = generate_content_ideas(niche, 3)
+            for idea in niche_ideas:
+                ideas.append(f"🎯 [{niche}] {idea}")
+
+        return ideas[:15]  # أقصى 15 فكرة
+    except Exception as e:
+        logger.error(f"fetch_trending_for_content error: {e}")
+        return []
+
+def smart_reply(text, user_name="صديقي", chat_id=0, user_id=0):
+    """نظام ردود ذكية متقدم - AI Assistant مدمج"""
+    text_lower = text.lower().strip()
+
+    # حفظ في سجل المحادثة
+    if chat_id:
+        db.add_ai_chat(chat_id, user_id, 'user', text)
+
+    # تحيات
+    greetings = ['مرحبا', 'هلا', 'السلام عليكم', 'سلام', 'اهلا', 'أهلا', 'هاي', 'صباح الخير', 'مساء الخير', 'hey', 'hi', 'hello']
+    for g in greetings:
+        if g in text_lower:
+            reply = random.choice([
+                f"أهلاً وسهلاً {user_name}! كيف حالك اليوم؟ 😊",
+                f"مرحباً {user_name}! نورت المجموعة 🌟",
+                f"وعليكم السلام {user_name}! أخبارك إيه؟ 💫",
+                f"هلا والله {user_name}! حياك الله 🎉",
+            ])
+            if chat_id:
+                db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+            return reply
+
+    # شكر
+    thanks = ['شكرا', 'مشكور', 'يعطيك العافية', 'الله يجزاك', 'thanks', 'thank you']
+    for t in thanks:
+        if t in text_lower:
+            reply = random.choice([
+                f"العفو {user_name}! دائماً في الخدمة 😊",
+                f"لا شكر على واجب {user_name}! 💙",
+                f"الله يعافيك {user_name}! 🌹",
+            ])
+            if chat_id:
+                db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+            return reply
+
+    # أوامر المساعدة
+    help_words = ['مساعدة', 'ساعدني', 'كيف', 'help', 'اوامر', 'أوامر']
+    for h in help_words:
+        if h in text_lower:
+            reply = (
+                f"🤖 <b>أنا مساعدتك الذكية!</b>\n\n"
+                f"يمكنني مساعدتك في:\n"
+                f"• الإجابة على الأسئلة العامة\n"
+                f"• تلخيص المحادثات\n"
+                f"• الترجمة بين اللغات\n"
+                f"• تقديم نصائح الإدارة\n\n"
+                f"استخدم أزرار AI في القائمة الرئيسية! 🎯"
+            )
+            if chat_id:
+                db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+            return reply
+
+    # أسئلة تقنية
+    tech_keywords = ['برمجة', 'بايثون', 'تيليجرام', 'بوت', 'api', 'كود', 'برنامج', 'تقنية', 'ذكاء اصطناعي', 'ai']
+    for kw in tech_keywords:
+        if kw in text_lower:
+            reply = random.choice([
+                f"سؤال تقني ممتاز {user_name}! 🖥️ دعني أساعدك...\nيمكنك البحث عن المزيد في وثائق المطورين أو سؤال المشرفين المتخصصين.",
+                f"موضوع تقني مهم {user_name}! 💡 أنصحك بالاطلاع على أحدث المصادر التعليمية في هذا المجال.",
+                f"أعجبني سؤالك عن {kw} {user_name}! 🚀 هذا المجال يتطور باستمرار، هل تريد نصائح محددة؟",
+            ])
+            if chat_id:
+                db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+            return reply
+
+    # أسئلة
+    if '?' in text or '؟' in text:
+        reply = random.choice([
+            f"سؤال ممتاز {user_name}! 🤔 دعني أفكر... أعتقد أن الأفضل أن نسأل المشرفين عن هذا",
+            f"سؤال مهم {user_name}! 💭 أتمنى أن نجد إجابة شافية",
+            f"هذا سؤال يستحق النقاش {user_name}! 🙋 من عنده إجابة؟",
+            f"فكرة جيدة للنقاش {user_name}! لنرى آراء الآخرين أيضاً 💡",
+        ])
+        if chat_id:
+            db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+        return reply
+
+    # ردود عامة ذكية
+    reply = random.choice([
+        f"كلام جميل {user_name}! 👍",
+        f"أوافقك الرأي {user_name}! ✨",
+        f"نقطة مهمة {user_name}! 💡",
+        f"شكراً للمشاركة {user_name}! 🌟",
+        f"ممتاز {user_name}! استمر 🚀",
+        f"فكرة رائعة {user_name}! 🎯",
+        f"صدقت {user_name}! 👏",
+        f"إضافة رائعة {user_name}! 💎",
+    ])
+    if chat_id:
+        db.add_ai_chat(chat_id, user_id, 'assistant', reply)
+    return reply
+
+def detect_spam_ai(text, user_id=0, chat_id=0):
+    """كشف السبام الذكي باستخدام تحليل الأنماط"""
+    if not text:
+        return {"is_spam": False, "confidence": 0, "reason": ""}
+
+    score = 0
+    reasons = []
+
+    # 1. تكرار الحروف المفرط
+    if re.search(r'(.)\1{10,}', text):
+        score += 30
+        reasons.append("تكرار حروف مفرط")
+
+    # 2. تكرار الكلمات
+    if re.search(r'(.{3,})\1{5,}', text):
+        score += 25
+        reasons.append("تكرار كلمات")
+
+    # 3. روابط متعددة
+    links = URL_PATTERN.findall(text) if text else []
+    if len(links) >= 3:
+        score += 35
+        reasons.append(f"روابط متعددة ({len(links)})")
+
+    # 4. معرفات متعددة
+    usernames = USERNAME_PATTERN.findall(text) if text else []
+    if len(usernames) >= 3:
+        score += 20
+        reasons.append(f"معرفات متعددة ({len(usernames)})")
+
+    # 5. رسالة طويلة جداً مع روابط
+    if len(text) > 2000 and len(links) >= 1:
+        score += 15
+        reasons.append("رسالة طويلة مع روابط")
+
+    # 6. أنماط سبام شائعة
+    spam_phrases = ['اضغط هنا', 'كسب المال', 'ربح سريع', 'free money', 'click here', 'earn money', 'تتبع الرابط', 'عرض خاص']
+    for phrase in spam_phrases:
+        if phrase in text.lower():
+            score += 20
+            reasons.append(f"عبارة سبام: {phrase}")
+            break
+
+    # 7. إيموجي مفرط
+    emoji_count = len(re.findall(r'[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U0001f900-\U0001f9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002600-\U000026FF]', text))
+    if emoji_count > 15:
+        score += 15
+        reasons.append(f"إيموجي مفرط ({emoji_count})")
+
+    # 8. فحص أنماط مخصصة من قاعدة البيانات
+    if chat_id:
+        patterns = db.get_spam_patterns(chat_id)
+        for p in patterns:
+            try:
+                if p['pattern_type'] == 'regex' and re.search(p['pattern'], text, re.IGNORECASE):
+                    score += 25
+                    reasons.append(f"نمط مخصص: {p['pattern'][:30]}")
+                elif p['pattern_type'] == 'keyword' and p['pattern'].lower() in text.lower():
+                    score += 25
+                    reasons.append(f"كلمة مخصصة: {p['pattern'][:30]}")
+            except:
+                pass
+
+    confidence = min(100, score)
+    is_spam = confidence >= 50
+
+    return {
+        "is_spam": is_spam,
+        "confidence": confidence,
+        "reason": " | ".join(reasons) if reasons else "لا يوجد",
+        "score": score
+    }
+
+def auto_moderate_decision(chat_id, user_id, text, action_type="message"):
+    """اتخاذ قرار إشراف تلقائي بناءً على تاريخ المستخدم"""
+    settings = db.get_settings(chat_id)
+    if not settings.get('auto_moderator', 0):
+        return {"action": "none", "reason": "الإشراف التلقائي معطل"}
+
+    # تحليل السبام
+    spam_result = detect_spam_ai(text, user_id, chat_id)
+
+    # التحقق من تاريخ المستخدم
+    warn_count = db.get_warning_count(chat_id, user_id)
+    msg_count = db.get_msg_count(chat_id, user_id)
+
+    action = "none"
+    reason = ""
+
+    if spam_result['is_spam']:
+        if spam_result['confidence'] >= 80:
+            # سبام عالي الثقة - حظر أو كتم
+            if warn_count >= 2:
+                action = "ban"
+                reason = f"سبام ذكي (ثقة {spam_result['confidence']}%) + تحذيرات سابقة"
+            else:
+                action = "mute"
+                reason = f"سبام ذكي (ثقة {spam_result['confidence']}%)"
+        elif spam_result['confidence'] >= 50:
+            # سبام متوسط - تحذير أو حذف
+            action = "delete"
+            reason = f"محتوى مشبوه (ثقة {spam_result['confidence']}%)"
+
+    # مستخدم جديد مع رسائل مشبوهة
+    if msg_count < 5 and spam_result['confidence'] >= 30:
+        action = "delete"
+        reason = f"مستخدم جديد + محتوى مشبوه"
+
+    # تسجيل القرار
+    if action != "none":
+        db.add_moderation_log(chat_id, user_id, action, reason, spam_result['confidence'], 1)
+
+    return {"action": action, "reason": reason, "spam_analysis": spam_result}
+
+def summarize_messages(chat_id, limit=20):
+    """تلخيص آخر رسائل المجموعة"""
+    history = db.get_ai_chat_history(chat_id, limit)
+    if not history:
+        return "📭 لا توجد رسائل كافية للتلخيص"
+
+    # عد الرسائل
+    total = len(history)
+    users = set(h['user_id'] for h in history)
+
+    # تحليل المحتوى
+    topics = []
+    for h in history:
+        content = h.get('content', '')
+        if content:
+            # استخراج الكلمات المفتاحية البسيط
+            words = content.split()
+            for w in words:
+                if len(w) > 3 and w not in topics:
+                    topics.append(w)
+
+    summary = (
+        f"📋 <b>ملخص آخر {total} رسالة</b>\n\n"
+        f"👥 عدد المشاركين: {len(users)}\n"
+        f"💬 إجمالي الرسائل: {total}\n"
+    )
+
+    if topics:
+        summary += f"🔑 أبرز الكلمات: {', '.join(topics[:10])}\n"
+
+    # تصنيف بسيط
+    questions = sum(1 for h in history if '?' in h.get('content', '') or '؟' in h.get('content', ''))
+    links_count = sum(1 for h in history if 'http' in h.get('content', '').lower() or 't.me' in h.get('content', '').lower())
+
+    summary += f"❓ الأسئلة: {questions}\n"
+    summary += f"🔗 الرسائل مع روابط: {links_count}\n"
+
+    # آخر المواضيع
+    recent_topics = [h.get('content', '')[:50] for h in history[:5] if h.get('content')]
+    if recent_topics:
+        summary += "\n📝 آخر المواضيع:\n"
+        for i, t in enumerate(recent_topics, 1):
+            summary += f"  {i}. {html_escape(t)}...\n"
+
+    return summary
+
+def translate_text(text, target_lang="en"):
+    """ترجمة نص باستخدام MyMemory API المجاني"""
+    import requests as req
+    try:
+        # تحديد لغة المصدر تلقائياً
+        source_lang = "ar" if any('\u0600' <= c <= '\u06FF' for c in text) else "en"
+        if target_lang == source_lang:
+            target_lang = "ar" if source_lang == "en" else "en"
+
+        url = f"https://api.mymemory.translated.net/get"
+        params = {
+            "q": text[:500],  # حد API
+            "langpair": f"{source_lang}|{target_lang}"
+        }
+        resp = req.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            translated = data.get('responseData', {}).get('translatedText', '')
+            if translated and translated != text:
+                lang_name = "الإنجليزية" if target_lang == "en" else "العربية"
+                return {
+                    "success": True,
+                    "translated": translated,
+                    "source_lang": source_lang,
+                    "target_lang": target_lang,
+                    "lang_name": lang_name
+                }
+        return {"success": False, "error": "لم يتم الترجمة"}
+    except Exception as e:
+        logger.error(f"translate_text error: {e}")
+        return {"success": False, "error": str(e)}
+
 def generate_ai_reply(text, user_name="صديقي"):
     """توليد رد ذكي بالذكاء الاصطناعي المدمج"""
     text_lower = text.lower().strip()
@@ -1694,6 +2267,8 @@ def kb_main(is_adm=False):
          InlineKeyboardButton("🏆 المتصدرين", callback_data="menu_leaderboard")],
         [InlineKeyboardButton("📺 يوتيوب", callback_data="menu_youtube"),
          InlineKeyboardButton("🛠️ أدوات ذكية", callback_data="menu_smart")],
+        [InlineKeyboardButton("⚡ مميزات قوية", callback_data="menu_power"),
+         InlineKeyboardButton("🧠 مساعد AI", callback_data="menu_ai_assistant")],
         [InlineKeyboardButton("👤 معلوماتي", callback_data="act_me"),
          InlineKeyboardButton("📋 القوانين", callback_data="act_rules")],
     ]
@@ -1869,6 +2444,7 @@ def kb_ai():
          InlineKeyboardButton("➕ إضافة رد تلقائي", callback_data="act_addautoreply")],
         [InlineKeyboardButton("📋 عرض الردود", callback_data="act_autoreplies"),
          InlineKeyboardButton("➖ حذف رد تلقائي", callback_data="act_delautoreply")],
+        [InlineKeyboardButton("🧠 مساعد AI", callback_data="menu_ai_assistant")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -1988,6 +2564,9 @@ def kb_botnet(chat_id):
          InlineKeyboardButton("➖ إزالة بوت", callback_data="bn_remove")],
         [InlineKeyboardButton(f"{'✅' if s.get('bot_communication',0) else '❌'} تواصل البوتات", callback_data="tog_botcomm")],
         [InlineKeyboardButton("📋 عرض البوتات المتصلة", callback_data="bn_show")],
+        [InlineKeyboardButton("📡 إرسال رسالة للبوتات", callback_data="botnet_send"),
+         InlineKeyboardButton("📢 بث أمر", callback_data="botnet_broadcast")],
+        [InlineKeyboardButton("🎯 إرسال أمر محدد", callback_data="botnet_command")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -2037,6 +2616,10 @@ def kb_youtube(chat_id):
          InlineKeyboardButton("🎨 صور مصغرة", callback_data="yt_thumb")],
         [InlineKeyboardButton("📋 تتبع الفيديوهات", callback_data="yt_track"),
          InlineKeyboardButton("💡 أفكار محتوى", callback_data="yt_ideas")],
+        [InlineKeyboardButton("📤 رفع فيديو", callback_data="yt_upload"),
+         InlineKeyboardButton("🤖 محتوى تلقائي", callback_data="yt_auto_content")],
+        [InlineKeyboardButton("📈 تحليلات القناة", callback_data="yt_analytics"),
+         InlineKeyboardButton("⏰ جدولة رفع", callback_data="yt_schedule")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -2048,6 +2631,31 @@ def kb_smart():
          InlineKeyboardButton("⏰ تذكير", callback_data="act_reminder")],
         [InlineKeyboardButton("🔗 معلومات رابط", callback_data="act_urlinfo"),
          InlineKeyboardButton("📊 إحصائيات سريعة", callback_data="act_quickstats")],
+        [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
+    ])
+
+def kb_ai_assistant(chat_id):
+    s = db.get_settings(chat_id)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅' if s.get('ai_chat_mode',0) else '❌'} وضع محادثة AI", callback_data="tog_aichat")],
+        [InlineKeyboardButton("❓ سؤال AI", callback_data="ai_ask"),
+         InlineKeyboardButton("📋 تلخيص المحادثة", callback_data="ai_summarize")],
+        [InlineKeyboardButton("🌐 ترجمة رسالة", callback_data="ai_translate"),
+         InlineKeyboardButton("🗑️ مسح سجل AI", callback_data="ai_clear_history")],
+        [InlineKeyboardButton("🔙 الذكاء الاصطناعي", callback_data="menu_ai")]
+    ])
+
+def kb_power_features(chat_id):
+    s = db.get_settings(chat_id)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅' if s.get('anti_spam_ai',0) else '❌'} كشف سبام AI", callback_data="tog_antispamai"),
+         InlineKeyboardButton(f"{'✅' if s.get('auto_moderator',0) else '❌'} إشراف تلقائي", callback_data="tog_automod")],
+        [InlineKeyboardButton("🎤 معالجة صوتية", callback_data="act_voice"),
+         InlineKeyboardButton("📋 استنساخ المجموعة", callback_data="act_clone_group")],
+        [InlineKeyboardButton("📢 بث جماعي", callback_data="act_group_broadcast"),
+         InlineKeyboardButton("💾 نسخ احتياطي", callback_data="act_backup_full")],
+        [InlineKeyboardButton("♻️ استعادة نسخة", callback_data="act_restore"),
+         InlineKeyboardButton("📊 سجل الإشراف AI", callback_data="act_modlog")],
         [InlineKeyboardButton("🔙 القائمة الرئيسية", callback_data="back")]
     ])
 
@@ -2064,7 +2672,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id == OWNER_ID:
         is_adm = True
     text = (
-        "🛡️ <b>بوت إدارة المجموعات المتكامل v12.0</b>\n\n"
+        "🛡️ <b>بوت إدارة المجموعات المتكامل v13.0</b>\n\n"
         "🔐 <b>نظام حماية متقدم</b> ضد الغارات والسبام والروابط\n"
         "⚡ <b>إدارة ذكية</b> بواجهة أزرار سهلة وبسيطة\n"
         "🤖 <b>ذكاء اصطناعي</b> ردود ذكية تلقائية في المجموعة\n"
@@ -2079,6 +2687,14 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🏆 <b>لوحة المتصدرين</b> تنافس على المراكز الأولى\n"
         "📝 <b>استطلاعات</b> تصويت جماعي\n"
         "🎫 <b>نظام تذاكر</b> للبلاغات والدعم الفني\n\n"
+        "📺 <b>يوتيوب متقدم</b> رفع فيديوهات وتحليلات وجدولة\n"
+        "📡 <b>شبكة بوتات متقدمة</b> إرسال وبث أوامر\n"
+        "🧠 <b>مساعد ذكي AI</b> محادثة وترجمة وتلخيص\n"
+        "🛡️ <b>حماية AI</b> كشف سبام ذكي وإشراف تلقائي\n"
+        "🎤 <b>رسائل صوتية</b> معالجة وتحويل\n"
+        "📋 <b>استنساخ المجموعة</b> نسخ إعدادات بين المجموعات\n"
+        "📢 <b>بث جماعي</b> إرسال لكل المجموعات\n"
+        "💾 <b>نسخ احتياطي</b> حفظ واستعادة الإعدادات\n\n"
         "👇 اختر أي قسم من الأزرار أدناه:"
     )
     try:
@@ -2111,7 +2727,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # ═══ القائمة الرئيسية ═══
         if data == "back":
             await safe_edit(query,
-                "🛡️ <b>بوت إدارة المجموعات المتكامل v12.0</b>\n\n"
+                "🛡️ <b>بوت إدارة المجموعات المتكامل v13.0</b>\n\n"
                 "🔐 حماية متقدمة | ⚡ إدارة ذكية | 🤖 ذكاء اصطناعي\n\n"
                 "👇 اختر أي قسم:",
                 reply_markup=kb_main(is_adm or is_owner))
@@ -2524,6 +3140,204 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_adm: return
             context.user_data["waiting"] = "yt_ideas"
             await safe_edit(query, "💡 <b>أفكار محتوى بالذكاء الاصطناعي</b>\n\nأرسل مجال قناتك:\nتقنية | تعليمي | ترفيهي | عام", reply_markup=kb_back_cancel())
+
+        # ═══ v13.0 YouTube Upload, Analytics, Schedule ═══
+        elif data == "yt_upload":
+            if not is_adm: return
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            context.user_data["waiting"] = "yt_upload"
+            await safe_edit(query, "📤 <b>رفع فيديو إلى يوتيوب</b>\n\nأرسل بيانات الفيديو:\n<code>العنوان | الوصف | الوسوم (مفصولة بفواصل)</code>\n\n⚠️ يتطلب OAuth2 Access Token بدلاً من API Key\n💡 يمكنك استخدام رمز الوصول من Google OAuth2", reply_markup=kb_back_cancel())
+
+        elif data == "yt_auto_content":
+            if not is_adm: return
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            ch = channels[0]
+            ideas = fetch_trending_for_content(ch.get('api_key', ''))
+            if ideas:
+                text_out = "🤖 <b>أفكار محتوى تلقائية من الرائج:</b>\n\n"
+                for i, idea in enumerate(ideas, 1):
+                    text_out += f"{i}. {idea}\n\n"
+                # Save ideas to DB
+                for idea in ideas:
+                    db.add_youtube_idea(chat.id, ch['channel_id'], 'auto_content', idea)
+            else:
+                text_out = "❌ لم يتم جلب الأفكار. تحقق من API Key"
+            await safe_edit(query, text_out, reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_analytics":
+            if not is_adm: return
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            ch = channels[0]
+            # Fetch current stats
+            stats = fetch_youtube_stats(ch.get('api_key', ''), ch['channel_id'])
+            analytics = db.get_youtube_analytics(chat.id, ch['channel_id'])
+            text_out = f"📈 <b>تحليلات القناة</b>\n\n"
+            if stats:
+                text_out += f"📺 القناة: {stats['name']}\n👥 المشتركين: {stats['subscribers']:,}\n👁️ المشاهدات: {stats['views']:,}\n🎬 الفيديوهات: {stats['videos']:,}\n\n"
+            if analytics:
+                total_subs = sum(a['subscribers_delta'] for a in analytics)
+                total_views = sum(a['views_delta'] for a in analytics)
+                text_out += f"📊 آخر 30 يوم:\n📈 تغير المشتركين: {total_subs:+,}\n👁️ مشاهدات جديدة: {total_views:,}\n📝 عدد التقارير: {len(analytics)}"
+            else:
+                text_out += "📊 لا توجد بيانات تحليلات سابقة\n💡 ستت积累 البيانات مع الاستخدام"
+            await safe_edit(query, text_out, reply_markup=kb_youtube(chat.id))
+
+        elif data == "yt_schedule":
+            if not is_adm: return
+            channels = db.get_youtube_channels(chat.id)
+            if not channels:
+                await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
+            context.user_data["waiting"] = "yt_schedule"
+            await safe_edit(query, "⏰ <b>جدولة رفع فيديو</b>\n\nأرسل بيانات الجدولة:\n<code>العنوان | الوصف | الوسوم | الدقائق_من_الآن</code>\n\nمثال:\n<code>فيديو رائع | وصف الفيديو | تقنية,ذكاءاصطناعي | 60</code>", reply_markup=kb_back_cancel())
+
+        # ═══ v13.0 AI Assistant ═══
+        elif data == "menu_ai_assistant":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            await safe_edit(query, "🧠 <b>مساعد AI المتقدم</b>\n\nمحادثة ذكية | ترجمة | تلخيص\nيمكنك تفعيل وضع المحادثة وسيتم الرد على كل رسالة تلقائياً!", reply_markup=kb_ai_assistant(chat.id))
+
+        elif data == "tog_aichat":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            s = db.get_settings(chat.id)
+            new_val = 0 if s.get('ai_chat_mode', 0) else 1
+            db.update_setting(chat.id, 'ai_chat_mode', new_val)
+            status = "✅ مفعّل" if new_val else "❌ معطل"
+            await safe_edit(query, f"🧠 <b>مساعد AI</b>\n\n💬 وضع محادثة AI: {status}", reply_markup=kb_ai_assistant(chat.id))
+
+        elif data == "ai_ask":
+            context.user_data["waiting"] = "ai_ask"
+            await safe_edit(query, "❓ <b>سؤال AI</b>\n\nاكتب سؤالك وسأجيبك بذكاء:", reply_markup=kb_back_cancel())
+
+        elif data == "ai_summarize":
+            summary = summarize_messages(chat.id)
+            await safe_edit(query, summary, reply_markup=kb_ai_assistant(chat.id))
+
+        elif data == "ai_translate":
+            context.user_data["waiting"] = "ai_translate"
+            await safe_edit(query, "🌐 <b>ترجمة رسالة</b>\n\nأرسل النص الذي تريد ترجمته:\nسيتم ترجمته تلقائياً بين العربية والإنجليزية", reply_markup=kb_back_cancel())
+
+        elif data == "ai_clear_history":
+            db.clear_ai_chat_history(chat.id)
+            await safe_edit(query, "🗑️ تم مسح سجل محادثات AI ✅", reply_markup=kb_ai_assistant(chat.id))
+
+        # ═══ v13.0 BotNet Communication ═══
+        elif data == "botnet_send":
+            if not is_adm: return
+            bots = db.get_bot_network(chat.id)
+            if not bots:
+                await safe_answer(query, "🤖 لا توجد بوتات متصلة!", show_alert=True); return
+            context.user_data["waiting"] = "botnet_send"
+            await safe_edit(query, "📡 <b>إرسال رسالة لكل البوتات</b>\n\nاكتب الرسالة التي تريد إرسالها لجميع البوتات المتصلة:", reply_markup=kb_back_cancel())
+
+        elif data == "botnet_broadcast":
+            if not is_adm: return
+            bots = db.get_bot_network(chat.id)
+            if not bots:
+                await safe_answer(query, "🤖 لا توجد بوتات متصلة!", show_alert=True); return
+            context.user_data["waiting"] = "botnet_broadcast"
+            await safe_edit(query, "📢 <b>بث أمر لكل البوتات</b>\n\nاكتب الأمر الذي تريد بثه:\nمثال: /maintenance_on | /lock_chat | /announce", reply_markup=kb_back_cancel())
+
+        elif data == "botnet_command":
+            if not is_adm: return
+            bots = db.get_bot_network(chat.id)
+            if not bots:
+                await safe_answer(query, "🤖 لا توجد بوتات متصلة!", show_alert=True); return
+            bot_list = "\n".join([f"• {b['bot_name']} (ID: <code>{b['bot_id']}</code>)" for b in bots])
+            context.user_data["waiting"] = "botnet_command"
+            await safe_edit(query, f"🎯 <b>إرسال أمر لبوت محدد</b>\n\n{bot_list}\n\nاكتب: معرف_البوت | الأمر\nمثال: <code>123456 | /status</code>", reply_markup=kb_back_cancel())
+
+        # ═══ v13.0 Power Features ═══
+        elif data == "menu_power":
+            if not is_adm:
+                await safe_answer(query, "⛔ للمشرفين فقط!", show_alert=True); return
+            await safe_edit(query, "⚡ <b>المميزات القوية v13.0</b>\n\n🛡️ كشف سبام ذكي | 🤖 إشراف تلقائي\n🎤 معالجة صوتية | 📋 استنساخ مجموعة\n📢 بث جماعي | 💾 نسخ احتياطي", reply_markup=kb_power_features(chat.id))
+
+        elif data == "tog_antispamai":
+            if not is_adm: return
+            s = db.get_settings(chat.id)
+            new_val = 0 if s.get('anti_spam_ai', 0) else 1
+            db.update_setting(chat.id, 'anti_spam_ai', new_val)
+            status = "✅ مفعّل" if new_val else "❌ معطل"
+            await safe_edit(query, f"⚡ <b>المميزات القوية</b>\n\n🛡️ كشف سبام AI: {status}", reply_markup=kb_power_features(chat.id))
+
+        elif data == "tog_automod":
+            if not is_adm: return
+            s = db.get_settings(chat.id)
+            new_val = 0 if s.get('auto_moderator', 0) else 1
+            db.update_setting(chat.id, 'auto_moderator', new_val)
+            status = "✅ مفعّل" if new_val else "❌ معطل"
+            await safe_edit(query, f"⚡ <b>المميزات القوية</b>\n\n🤖 إشراف تلقائي: {status}", reply_markup=kb_power_features(chat.id))
+
+        elif data == "act_voice":
+            if not is_adm: return
+            await safe_edit(query, "🎤 <b>معالجة الرسائل الصوتية</b>\n\n💡 عند تفعيل هذه الميزة، سيحفظ البوت الرسائل الصوتية ويعرض مدتها.\nأرسل أي رسالة صوتية وسيتم تسجيلها تلقائياً.\n\n📋 يمكنك عرض سجل الرسائل الصوتية من هنا.", reply_markup=kb_power_features(chat.id))
+
+        elif data == "act_clone_group":
+            if not is_adm: return
+            context.user_data["waiting"] = "clone_group"
+            await safe_edit(query, "📋 <b>استنساخ إعدادات المجموعة</b>\n\nأرسل معرف المجموعة المصدر (chat_id) لنسخ إعداداتها إلى هذه المجموعة:\n\n⚠️ سيتم استبدال إعدادات المجموعة الحالية!", reply_markup=kb_back_cancel())
+
+        elif data == "act_group_broadcast":
+            if not is_adm: return
+            if user_id != OWNER_ID:
+                await safe_answer(query, "👑 هذه الميزة للمالك فقط!", show_alert=True); return
+            context.user_data["waiting"] = "group_broadcast"
+            await safe_edit(query, "📢 <b>بث جماعي لكل المجموعات</b>\n\nاكتب الرسالة التي تريد إرسالها لجميع المجموعات:", reply_markup=kb_back_cancel())
+
+        elif data == "act_backup_full":
+            if not is_adm: return
+            settings = db.get_settings(chat.id)
+            backup_data = json.dumps(settings, ensure_ascii=False)
+            db.create_backup(chat.id, backup_data, 'full', user_id)
+            await safe_edit(query, "💾 <b>تم إنشاء نسخة احتياطية كاملة!</b>\n\n✅ تم حفظ جميع إعدادات المجموعة\n📋 يمكنك استعادتها في أي وقت من زر الاستعادة", reply_markup=kb_power_features(chat.id))
+
+        elif data == "act_restore":
+            if not is_adm: return
+            backup = db.get_latest_backup(chat.id)
+            if not backup:
+                await safe_answer(query, "💾 لا توجد نسخة احتياطية!", show_alert=True); return
+            backups = db.get_backups(chat.id)
+            text_out = "♻️ <b>النسخ الاحتياطية المتاحة:</b>\n\n"
+            for b in backups:
+                text_out += f"• #{b['id']} | {b['backup_type']} | {b['created_at'][:16]}\n"
+            text_out += "\n💡 لاستعادة نسخة، اضغط على الزر أدناه"
+            await safe_edit(query, text_out, reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("♻️ استعادة أحدث نسخة", callback_data="do_restore_latest")],
+                [InlineKeyboardButton("🔙 المميزات القوية", callback_data="menu_power")]
+            ]))
+
+        elif data == "do_restore_latest":
+            if not is_adm: return
+            backup = db.get_latest_backup(chat.id)
+            if not backup:
+                await safe_answer(query, "💾 لا توجد نسخة احتياطية!", show_alert=True); return
+            try:
+                settings = json.loads(backup['backup_data'])
+                for key, value in settings.items():
+                    if key in VALID_SETTING_KEYS and key != 'chat_id':
+                        db.update_setting(chat.id, key, value)
+                await safe_edit(query, "♻️ <b>تم استعادة الإعدادات بنجاح!</b>\n\n✅ جميع الإعدادات تم استعادتها من النسخة الاحتياطية", reply_markup=kb_power_features(chat.id))
+            except Exception as e:
+                await safe_answer(query, f"❌ خطأ في الاستعادة: {str(e)[:100]}", show_alert=True)
+
+        elif data == "act_modlog":
+            if not is_adm: return
+            log = db.get_moderation_log(chat.id, 15)
+            if not log:
+                await safe_edit(query, "📊 <b>سجل الإشراف AI</b>\n\n📭 لا توجد قرارات إشراف تلقائية بعد", reply_markup=kb_power_features(chat.id)); return
+            text_out = "📊 <b>سجل الإشراف AI</b>\n\n"
+            for entry in log:
+                action_emoji = {"delete": "🗑️", "mute": "🔇", "ban": "🚫", "warn": "⚠️"}.get(entry['action'], "📋")
+                auto = "🤖" if entry['auto_action'] else "👤"
+                text_out += f"{action_emoji} {auto} <a href='tg://user?id={entry['user_id']}'>مستخدم</a> - {entry['action']} ({entry['confidence']:.0f}%)\n   {entry['reason'][:50]}\n\n"
+            await safe_edit(query, text_out, reply_markup=kb_power_features(chat.id))
 
         # ═══ الأدوات الذكية ═══
         elif data == "menu_smart":
@@ -4200,6 +5014,173 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await msg.reply_text(ideas_text, parse_mode="HTML")
             context.user_data.pop("waiting", None); return
 
+        # ═══ v13.0 YouTube Upload & Schedule ═══
+        elif waiting == "yt_upload":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            channels = db.get_youtube_channels(chat.id)
+            ch_id = channels[0]['channel_id'] if channels else ''
+            if "|" in text:
+                parts = text.split("|")
+                title = parts[0].strip() if len(parts) > 0 else ""
+                desc = parts[1].strip() if len(parts) > 1 else ""
+                tags = parts[2].strip() if len(parts) > 2 else ""
+            else:
+                title = text.strip()
+                desc = ""
+                tags = ""
+            # Save upload request to DB
+            db.add_youtube_upload(chat.id, ch_id, title, desc, tags, '', '', user_id)
+            result_text = (
+                f"📤 <b>تم تسجيل طلب رفع فيديو!</b>\n\n"
+                f"🎬 العنوان: {html_escape(title)}\n"
+                f"📝 الوصف: {html_escape(desc[:100])}\n"
+                f"🏷️ الوسوم: {html_escape(tags)}\n\n"
+                f"⚠️ لرفع الفيديو فعلياً، تحتاج OAuth2 Access Token\n"
+                f"💡 استخدم جدولة الرفع لتحديد وقت النشر"
+            )
+            await msg.reply_text(result_text, parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "yt_schedule":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            channels = db.get_youtube_channels(chat.id)
+            ch_id = channels[0]['channel_id'] if channels else ''
+            if "|" in text:
+                parts = text.split("|")
+                title = parts[0].strip() if len(parts) > 0 else ""
+                desc = parts[1].strip() if len(parts) > 1 else ""
+                tags = parts[2].strip() if len(parts) > 2 else ""
+                minutes_str = parts[3].strip() if len(parts) > 3 else "60"
+            else:
+                title = text.strip()
+                desc = ""
+                tags = ""
+                minutes_str = "60"
+            try:
+                minutes = int(minutes_str)
+                scheduled_at = (datetime.now() + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+                db.add_youtube_upload(chat.id, ch_id, title, desc, tags, '', scheduled_at, user_id)
+                await msg.reply_text(f"⏰ <b>تم جدولة رفع الفيديو!</b>\n\n🎬 العنوان: {html_escape(title)}\n⏰ بعد: {minutes} دقيقة\n📅 في: {scheduled_at}", parse_mode="HTML")
+            except ValueError:
+                await msg.reply_text("❌ الدقائق يجب أن تكون رقماً")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ v13.0 AI Assistant Waiting States ═══
+        elif waiting == "ai_ask":
+            reply = smart_reply(text, user.first_name, chat.id, user_id)
+            await msg.reply_text(f"🧠 {reply}", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "ai_translate":
+            result = translate_text(text)
+            if result.get('success'):
+                await msg.reply_text(
+                    f"🌐 <b>ترجمة إلى {result['lang_name']}</b>\n\n"
+                    f"📝 النص: {html_escape(text[:200])}\n"
+                    f"🔄 الترجمة: {html_escape(result['translated'][:200])}",
+                    parse_mode="HTML"
+                )
+            else:
+                await msg.reply_text(f"❌ فشل في الترجمة: {result.get('error', 'خطأ غير معروف')}")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ v13.0 BotNet Communication ═══
+        elif waiting == "botnet_send":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            bots = db.get_bot_network(chat.id)
+            sent = 0
+            for bot in bots:
+                if bot.get('is_active'):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=bot['bot_id'],
+                            text=f"📡 رسالة من الشبكة: {text}"
+                        )
+                        db.add_botnet_message(chat.id, bot['bot_id'], 'send', text)
+                        sent += 1
+                    except:
+                        pass
+            await msg.reply_text(f"📡 تم إرسال الرسالة إلى {sent}/{len(bots)} بوت ✅", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "botnet_broadcast":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            bots = db.get_bot_network(chat.id)
+            sent = 0
+            for bot in bots:
+                if bot.get('is_active'):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=bot['bot_id'],
+                            text=f"📢 أمر بث: {text}"
+                        )
+                        db.add_botnet_message(chat.id, bot['bot_id'], 'broadcast', text)
+                        sent += 1
+                    except:
+                        pass
+            await msg.reply_text(f"📢 تم بث الأمر إلى {sent}/{len(bots)} بوت ✅", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
+        elif waiting == "botnet_command":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            if "|" in text:
+                parts = text.split("|", 1)
+                target_bot_id = parts[0].strip()
+                command = parts[1].strip() if len(parts) > 1 else ""
+                try:
+                    bot_id_int = int(target_bot_id)
+                    await context.bot.send_message(
+                        chat_id=bot_id_int,
+                        text=f"🎯 أمر: {command}"
+                    )
+                    db.add_botnet_message(chat.id, bot_id_int, 'command', command)
+                    await msg.reply_text(f"🎯 تم إرسال الأمر إلى البوت {target_bot_id} ✅", parse_mode="HTML")
+                except ValueError:
+                    await msg.reply_text("❌ معرف البوت يجب أن يكون رقماً")
+                except Exception as e:
+                    await msg.reply_text(f"❌ فشل الإرسال: {str(e)[:100]}")
+            else:
+                await msg.reply_text("❌ الصيغة: معرف_البوت | الأمر")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ v13.0 Clone Group ═══
+        elif waiting == "clone_group":
+            if not is_adm:
+                context.user_data.pop("waiting", None); return
+            try:
+                source_chat_id = int(text.strip())
+                source_settings = db.get_settings(source_chat_id)
+                if source_settings:
+                    for key, value in source_settings.items():
+                        if key in VALID_SETTING_KEYS and key != 'chat_id':
+                            db.update_setting(chat.id, key, value)
+                    await msg.reply_text("📋 تم استنساخ إعدادات المجموعة بنجاح ✅", parse_mode="HTML")
+                else:
+                    await msg.reply_text("❌ المجموعة المصدر غير موجودة في قاعدة البيانات")
+            except ValueError:
+                await msg.reply_text("❌ معرف المجموعة يجب أن يكون رقماً")
+            context.user_data.pop("waiting", None); return
+
+        # ═══ v13.0 Group Broadcast ═══
+        elif waiting == "group_broadcast":
+            if user_id != OWNER_ID:
+                context.user_data.pop("waiting", None); return
+            group_ids = db.get_all_group_ids()
+            sent = 0
+            for gid in group_ids:
+                try:
+                    await context.bot.send_message(chat_id=gid, text=f"📢 <b>بث جماعي</b>\n\n{text}", parse_mode="HTML")
+                    sent += 1
+                except:
+                    pass
+            await msg.reply_text(f"📢 تم البث إلى {sent}/{len(group_ids)} مجموعة ✅", parse_mode="HTML")
+            context.user_data.pop("waiting", None); return
+
         # ═══ الأدوات الذكية ═══
         elif waiting == "qrcode":
             if HAS_QRCODE:
@@ -4304,6 +5285,46 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     settings = db.get_settings(chat.id)
+
+    # ═══ v13.0 كشف السبام الذكي AI ═══
+    if settings.get('anti_spam_ai', 0) and text:
+        spam_result = detect_spam_ai(text, user_id, chat.id)
+        if spam_result['is_spam']:
+            try:
+                await msg.delete()
+                db.increment_stat(chat.id, "total_spam_blocked")
+                db.add_moderation_log(chat.id, user_id, 'delete', spam_result['reason'], spam_result['confidence'], 1)
+                if spam_result['confidence'] >= 80:
+                    await chat.send_message(f"🛡️ <b>كشف سبام AI</b>\n\n🤖 تم حذف رسالة تلقائياً (ثقة: {spam_result['confidence']}%)\n📋 السبب: {spam_result['reason']}", parse_mode="HTML")
+            except: pass
+            return
+
+    # ═══ v13.0 الإشراف التلقائي AI ═══
+    if settings.get('auto_moderator', 0) and text:
+        mod_decision = auto_moderate_decision(chat.id, user_id, text)
+        if mod_decision['action'] == 'delete':
+            try:
+                await msg.delete()
+                db.increment_stat(chat.id, "total_deleted")
+            except: pass
+            return
+        elif mod_decision['action'] == 'mute':
+            try:
+                await msg.delete()
+                until = int(time.time()) + 3600  # كتم ساعة
+                await chat.restrict_chat_member(user_id, ChatPermissions(can_send_messages=False), until_date=until)
+                db.increment_stat(chat.id, "total_mutes")
+                await chat.send_message(f"🤖 <b>إشراف تلقائي</b>\n\n🔇 تم كتم المستخدم تلقائياً\n📋 السبب: {mod_decision['reason']}", parse_mode="HTML")
+            except: pass
+            return
+        elif mod_decision['action'] == 'ban':
+            try:
+                await msg.delete()
+                await chat.ban_member(user_id)
+                db.increment_stat(chat.id, "total_bans")
+                await chat.send_message(f"🤖 <b>إشراف تلقائي</b>\n\n🚫 تم حظر المستخدم تلقائياً\n📋 السبب: {mod_decision['reason']}", parse_mode="HTML")
+            except: pass
+            return
 
     # وضع الصيانة
     if settings.get('maintenance_mode', 0):
@@ -4484,6 +5505,22 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ai_response = generate_ai_reply(text, user.first_name)
         if ai_response:
             await msg.reply_text(ai_response)
+
+    # ═══ v13.0 وضع محادثة AI ═══
+    if settings.get('ai_chat_mode', 0) and not user.is_bot and not replied:
+        ai_response = smart_reply(text, user.first_name, chat.id, user_id)
+        if ai_response:
+            try:
+                await msg.reply_text(f"🧠 {ai_response}", parse_mode="HTML")
+                replied = True
+            except: pass
+
+    # ═══ v13.0 معالجة الرسائل الصوتية ═══
+    if msg.voice:
+        try:
+            voice = msg.voice
+            db.add_voice_message(chat.id, user_id, voice.file_id, voice.duration or 0)
+        except: pass
 
     # عداد الرسائل
     db.increment_msg_count(chat.id, user_id)
@@ -5617,7 +6654,7 @@ def build_application():
     except Exception as e:
         logger.warning(f"⚠️ خطأ في الجدولة: {e}")
 
-    logger.info("🛡️ بوت إدارة المجموعات v12.0 يعمل الآن!")
+    logger.info("🛡️ بوت إدارة المجموعات v13.0 يعمل الآن!")
     # ═══ معالج الأخطاء العام ═══
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         """معالج الأخطاء العام - يمنع توقف البوت عند حدوث أي خطأ"""
@@ -5679,7 +6716,7 @@ def main():
         app = None
         try:
             app = build_application()
-            logger.info("🛡️ بوت إدارة المجموعات v12.0 يعمل الآن!")
+            logger.info("🛡️ بوت إدارة المجموعات v13.0 يعمل الآن!")
             app.run_polling(drop_pending_updates=True, allowed_updates=Update.ALL_TYPES)
             # إذا وصلنا هنا، فـ run_polling توقف طبيعياً
             logger.warning("⚠️ run_polling stopped normally")

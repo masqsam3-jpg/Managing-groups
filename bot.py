@@ -223,6 +223,11 @@ def wake():
     """مسار خاص لإيقاظ البوت - يُستخدم من خدمة المراقبة"""
     return jsonify({"awake": True, "pid": os.getpid(), "status": "running"}), 200
 
+@web_app.route('/keepalive')
+def keepalive():
+    """مسار سريع جداً لإبقاء البوت نشط - مُحسّن لأقل استهلاك"""
+    return "ok", 200
+
 @web_app.route('/ping')
 def ping():
     """مسار ping بسيط وسريع - مُحسّن لخدمات المراقبة الخارجية"""
@@ -275,9 +280,9 @@ def self_ping_loop():
             port = int(os.environ.get("PORT", 8080))
             ping_ok = False
 
-            # محاولة الاتصال المحلي أولاً
+            # محاولة الاتصال المحلي أولاً (استخدام /keepalive السريع)
             try:
-                resp = req_lib.get(f"http://127.0.0.1:{port}/health", timeout=10)
+                resp = req_lib.get(f"http://127.0.0.1:{port}/keepalive", timeout=5)
                 if resp.status_code == 200:
                     ping_ok = True
                     consecutive_failures = 0
@@ -285,10 +290,10 @@ def self_ping_loop():
             except Exception as e:
                 logger.warning(f"💓 Self-ping محلي #{ping_count}: ❌ {e}")
 
-            # محاولة الاتصال عبر رابط Render إذا كان متاحاً
+            # محاولة الاتصال عبر رابط Render (استخدام /keepalive السريع)
             if RENDER_APP_URL:
                 try:
-                    resp = req_lib.get(f"{RENDER_APP_URL}/health", timeout=15)
+                    resp = req_lib.get(f"{RENDER_APP_URL}/keepalive", timeout=10)
                     if resp.status_code == 200:
                         ping_ok = True
                         consecutive_failures = 0
@@ -656,9 +661,48 @@ class Database:
                 replied_at TEXT DEFAULT CURRENT_TIMESTAMP
             )''')
             conn.commit()
+            
+            # ═══ إضافة فهارس لتسريع الاستعلامات (كل فهرس منفصل) ═══
+            index_statements = [
+                'CREATE INDEX IF NOT EXISTS idx_warnings_chat_user ON warnings(chat_id, user_id)',
+                'CREATE INDEX IF NOT EXISTS idx_action_log_chat ON action_log(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_temp_mutes_until ON temp_mutes(mute_until)',
+                'CREATE INDEX IF NOT EXISTS idx_scheduled_sent ON scheduled_messages(sent, send_at)',
+                'CREATE INDEX IF NOT EXISTS idx_personal_bot_rules_user ON personal_bot_rules(user_id, is_active)',
+                'CREATE INDEX IF NOT EXISTS idx_personal_bot_log_user ON personal_bot_log(user_id)',
+                'CREATE INDEX IF NOT EXISTS idx_ai_chat_history_chat ON ai_chat_history(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_moderation_log_chat ON moderation_log(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_youtube_ideas_chat ON youtube_ideas(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_youtube_analytics_chat ON youtube_analytics(chat_id, channel_id)',
+                'CREATE INDEX IF NOT EXISTS idx_filters_chat ON filters(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_badwords_chat ON badwords(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_auto_replies_chat ON auto_replies(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_captcha_chat ON captcha(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_blacklist_chat ON blacklist(chat_id)',
+                'CREATE INDEX IF NOT EXISTS idx_members_chat ON group_members(chat_id, user_id)',
+            ]
+            for idx_sql in index_statements:
+                try:
+                    c.execute(idx_sql)
+                except Exception:
+                    pass  # الجدول قد لا يكون موجوداً بعد
+            logger.info("✅ Database indexes created successfully")
+            
+            conn.commit()
             conn.close()
-
+    
+    # ═══ نظام التخزين المؤقت للإعدادات (Cache) ═══
+    _settings_cache = {}  # {chat_id: (data, timestamp)}
+    _CACHE_TTL = 60  # ثانية واحدة
+    
     def get_settings(self, chat_id: int) -> dict:
+        # ═══ التحقق من التخزين المؤقت أولاً ═══
+        now = time.time()
+        cached = self._settings_cache.get(chat_id)
+        if cached and (now - cached[1]) < self._CACHE_TTL:
+            return cached[0]
+        
+        # ═══ استعلام من قاعدة البيانات ═══
         with self.lock:
             conn = self._get_conn()
             c = conn.cursor()
@@ -666,7 +710,9 @@ class Database:
             row = c.fetchone()
             conn.close()
             if row:
-                return dict(row)
+                result = dict(row)
+                self._settings_cache[chat_id] = (result, now)
+                return result
         self._create_settings(chat_id)
         with self.lock:
             conn = self._get_conn()
@@ -674,7 +720,16 @@ class Database:
             c.execute("SELECT * FROM group_settings WHERE chat_id = ?", (chat_id,))
             row = c.fetchone()
             conn.close()
-            return dict(row) if row else {}
+            result = dict(row) if row else {}
+            self._settings_cache[chat_id] = (result, now)
+            return result
+    
+    def invalidate_settings_cache(self, chat_id=None):
+        """إلغاء التخزين المؤقت للإعدادات"""
+        if chat_id:
+            self._settings_cache.pop(chat_id, None)
+        else:
+            self._settings_cache.clear()
 
     def _create_settings(self, chat_id: int):
         with self.lock:
@@ -695,6 +750,8 @@ class Database:
             c.execute(f"UPDATE group_settings SET {key} = ? WHERE chat_id = ?", (value, chat_id))
             conn.commit()
             conn.close()
+        # إلغاء التخزين المؤقت بعد التحديث
+        self.invalidate_settings_cache(chat_id)
 
     # ═══ التحذيرات ═══
     def add_warning(self, chat_id, user_id, reason, warned_by):
@@ -3859,7 +3916,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not channels:
                 await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
             ch = channels[0]
-            stats = fetch_youtube_stats(ch.get('api_key', ''), ch['channel_id'])
+            stats = await asyncio.to_thread(fetch_youtube_stats, ch.get('api_key', ''), ch['channel_id'])
             if stats:
                 text = f"📊 <b>إحصائيات قناة {stats['name']}</b>\n\n👥 المشتركين: {stats['subscribers']:,}\n👁️ المشاهدات: {stats['views']:,}\n🎬 الفيديوهات: {stats['videos']:,}"
                 # Update DB
@@ -3873,7 +3930,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not channels:
                 await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
             ch = channels[0]
-            trending = fetch_youtube_trending(ch.get('api_key', ''))
+            trending = await asyncio.to_thread(fetch_youtube_trending, ch.get('api_key', ''))
             if trending:
                 text = "🔥 <b>الفيديوهات الرائجة:</b>\n\n"
                 for i, v in enumerate(trending, 1):
@@ -3920,7 +3977,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not channels:
                 await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
             ch = channels[0]
-            ideas = fetch_trending_for_content(ch.get('api_key', ''))
+            ideas = await asyncio.to_thread(fetch_trending_for_content, ch.get('api_key', ''))
             if ideas:
                 text_out = "🤖 <b>أفكار محتوى تلقائية من الرائج:</b>\n\n"
                 for i, idea in enumerate(ideas, 1):
@@ -3939,7 +3996,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_answer(query, "📺 اربط قناة أولاً!", show_alert=True); return
             ch = channels[0]
             # Fetch current stats
-            stats = fetch_youtube_stats(ch.get('api_key', ''), ch['channel_id'])
+            stats = await asyncio.to_thread(fetch_youtube_stats, ch.get('api_key', ''), ch['channel_id'])
             analytics = db.get_youtube_analytics(chat.id, ch['channel_id'])
             text_out = f"📈 <b>تحليلات القناة</b>\n\n"
             if stats:
@@ -5892,7 +5949,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     channel_id = parts[1].strip()
                     ch_name = parts[2].strip()
                     # Verify API key by fetching stats
-                    stats = fetch_youtube_stats(api_key, channel_id)
+                    stats = await asyncio.to_thread(fetch_youtube_stats, api_key, channel_id)
                     if stats:
                         db.add_youtube_channel(chat.id, channel_id, stats['name'], api_key, user_id)
                         await msg.reply_text(f"📺 تم ربط القناة: <b>{stats['name']}</b> ✅\n👥 المشتركين: {stats['subscribers']:,} | 🎬 الفيديوهات: {stats['videos']:,}", parse_mode="HTML")
@@ -6031,7 +6088,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("waiting", None); return
 
         elif waiting == "ai_translate":
-            result = translate_text(text)
+            result = await asyncio.to_thread(translate_text, text)
             if result.get('success'):
                 await msg.reply_text(
                     f"🌐 <b>ترجمة إلى {result['lang_name']}</b>\n\n"
@@ -6166,7 +6223,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif waiting == "weather":
             city = text.strip()
-            weather = get_weather(city)
+            weather = await asyncio.to_thread(get_weather, city)
             if weather:
                 text_out = (
                     f"🌤️ <b>حالة الطقس - {weather['city']}, {weather['country']}</b>\n\n"
@@ -6959,7 +7016,7 @@ def build_application():
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("✅ تم حذف أي webhook سابق (post_init)")
-            await asyncio.sleep(3)  # انتظار إضافي لضمان توقف المثيل القديم
+            await asyncio.sleep(1)  # انتظار قصير لضمان توقف المثيل القديم
         except Exception as e:
             logger.warning(f"⚠️ لم يتم حذف webhook: {e}")
         try:
